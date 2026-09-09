@@ -36,16 +36,16 @@ export default function ControlPanel({
         <label>Ubah Ukuran Porsi</label>
         <input
           type="range"
-          min="0.3"
+          min="0.5"
           max="2.0"
           step="0.05"
-          value={(riceMound.radiusX + riceMound.radiusZ + riceMound.height) / 3}
+          value={(riceMound.radiusX / 0.6 + riceMound.radiusZ / 0.5 + riceMound.height / 0.25) / 3}
           onChange={(e) => {
             const scale = parseFloat(e.target.value);
             onRiceMoundChange({
-              radiusX: scale * 1.2,
-              radiusZ: scale * 1.0,
-              height: scale * 0.5,
+              radiusX: scale * 0.6,
+              radiusZ: scale * 0.5,
+              height: scale * 0.25,
             });
           }}
           className="portion-slider"
@@ -74,28 +74,32 @@ export default function ControlPanel({
         </div>
       </div>
 
-      <div className="control-section">
-        <h3>📊 Estimasi Nasi</h3>
-        
-        <div className="estimate-card highlight">
-          <div className="estimate-value">{estimate.kcal}</div>
-          <div className="estimate-label">kalori (kcal)</div>
-          
-          <div className="value-display">
-            <span>Berat:</span>
-            <strong>{estimate.grams}g</strong>
+      <div className="control-section collapsed">
+        <details>
+          <summary>📊 Detail Estimasi</summary>
+          <div className="estimate-details">
+            <div className="value-display">
+              <span>Berat:</span>
+              <strong>{estimate.grams}g</strong>
+            </div>
+            <div className="value-display">
+              <span>Kalori:</span>
+              <strong>{estimate.kcal} kcal</strong>
+            </div>
+            <div className="value-display">
+              <span>Rentang:</span>
+              <strong>{estimate.gramsLow}–{estimate.gramsHigh}g</strong>
+            </div>
+            <div className="value-display">
+              <span>Sendok makan:</span>
+              <strong>{estimate.sendokMakan}</strong>
+            </div>
+            <div className="value-display">
+              <span>Centong:</span>
+              <strong>{estimate.centong}</strong>
+            </div>
           </div>
-          
-          <div className="estimate-range">
-            <strong>Rentang:</strong> {estimate.kcalLow}–{estimate.kcalHigh} kcal<br />
-            ({estimate.gramsLow}–{estimate.gramsHigh}g)
-          </div>
-        </div>
-        
-        <div className="indonesian-unit">
-          ≈ <strong>{estimate.sendokMakan}</strong> sendok makan<br />
-          ≈ <strong>{estimate.centong}</strong> centong
-        </div>
+        </details>
       </div>
 
       <div className="control-section">

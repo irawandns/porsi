@@ -8,7 +8,8 @@ import {
 
 export function calculateEllipsoidVolume(config: RiceMoundConfig): number {
   const { radiusX, radiusZ, height } = config;
-  const volume = (4 / 3) * Math.PI * radiusX * height * radiusZ;
+  // Half-ellipsoid (hemisphere mound): V = (2/3) * π * rx * h * rz
+  const volume = (2 / 3) * Math.PI * radiusX * height * radiusZ;
   return volume;
 }
 
