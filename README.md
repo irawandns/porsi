@@ -6,6 +6,30 @@ Porsi helps users estimate calories by sculpting food volume on a **3D plate** t
 
 ![Porsi Screenshot](https://img.shields.io/badge/status-MVP-green)
 
+## 🌐 Live Demo
+
+**⚠️ Setup Required**: The site will be available at **https://irawandns.github.io/porsi/** after completing the manual setup steps below.
+
+### Required Steps to Enable GitHub Pages:
+
+1. **Make Repository Public** (required for free GitHub Pages):
+   - Go to https://github.com/irawandns/porsi/settings
+   - Scroll to **Danger Zone** → **Change visibility**
+   - Select **Make public** and confirm
+
+2. **Enable GitHub Pages**:
+   - Go to https://github.com/irawandns/porsi/settings/pages
+   - Under **Build and deployment**:
+     - Source: Select **GitHub Actions**
+   - The workflow will automatically deploy on the next push
+
+3. **Verify Deployment**:
+   - Check https://github.com/irawandns/porsi/actions
+   - Once the "Deploy to GitHub Pages" workflow completes (green ✓)
+   - Visit https://irawandns.github.io/porsi/
+
+See `DEPLOYMENT.md` for detailed deployment instructions and troubleshooting.
+
 ## 🎯 Concept
 
 The 3D plate is your **teacher**, not just decoration. By interactively adjusting the size and shape of rice mounds (and other foods), you learn to visually estimate portions and their caloric content. This is particularly useful in Indonesia where rice is a staple and portion sizes vary widely between home, warung, and restaurant settings.
