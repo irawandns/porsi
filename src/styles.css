@@ -191,6 +191,54 @@ body {
   gap: 0.5rem;
 }
 
+.control-section details {
+  margin-top: 0.5rem;
+}
+
+.control-section summary {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  transition: all 0.2s;
+  list-style: none;
+  user-select: none;
+}
+
+.control-section summary:hover {
+  background: var(--card-bg);
+  color: var(--text-primary);
+}
+
+.control-section summary::before {
+  content: '▶ ';
+  display: inline-block;
+  transition: transform 0.2s;
+}
+
+.control-section details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.estimate-details {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-top: 0.5rem;
+}
+
+.estimate-details .value-display {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.estimate-details .value-display:last-child {
+  border-bottom: none;
+}
+
 .control-section label {
   display: block;
   font-size: 0.875rem;

@@ -32,23 +32,36 @@ function RiceMound({ config, estimate }: { config: RiceMoundConfig; estimate: Nu
   const meshRef = useRef<THREE.Mesh>(null);
   
   return (
-    <group>
+    <group position={[0, 0.05, 0]}>
       <mesh 
         ref={meshRef} 
         castShadow 
         position={[0, 0, 0]}
         scale={[config.radiusX, config.height, config.radiusZ]}
       >
-        <sphereGeometry args={[1, 32, 16]} />
+        <sphereGeometry args={[1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
         <meshStandardMaterial 
           color="#f8f8f0" 
           roughness={0.9} 
           metalness={0.0}
-          side={THREE.DoubleSide}
         />
       </mesh>
       
-      <Html position={[0, config.height * 1.2, 0]} center>
+      <mesh 
+        castShadow 
+        position={[0, 0, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        scale={[config.radiusX, config.radiusZ, 1]}
+      >
+        <circleGeometry args={[1, 32]} />
+        <meshStandardMaterial 
+          color="#f8f8f0" 
+          roughness={0.9} 
+          metalness={0.0}
+        />
+      </mesh>
+      
+      <Html position={[0, config.height * 1.2, 0]} center occlude>
         <div className="rice-hud">
           <div className="rice-hud-primary">{estimate.grams}g</div>
           <div className="rice-hud-secondary">{estimate.kcal} kcal</div>

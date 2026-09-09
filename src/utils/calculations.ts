@@ -8,12 +8,16 @@ import {
 
 export function calculateEllipsoidVolume(config: RiceMoundConfig): number {
   const { radiusX, radiusZ, height } = config;
-  const volume = (4 / 3) * Math.PI * radiusX * height * radiusZ;
+  // Half-ellipsoid (hemisphere mound): V = (2/3) * π * rx * h * rz
+  const volume = (2 / 3) * Math.PI * radiusX * height * radiusZ;
   return volume;
 }
 
 export function volumeToMl(volume: number): number {
-  return volume * 1000;
+  // Scene units calibrated so default {1.2, 1.0, 0.5} → ~150-250g
+  // Scene volume is in abstract units; scale factor converts to ml
+  // 1 scene unit³ ≈ 0.138 dm³ = 138 ml (calibrated for realistic portions)
+  return volume * 138;
 }
 
 export function mlToGrams(ml: number, density: number = RICE_DENSITY): number {
