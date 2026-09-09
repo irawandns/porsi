@@ -1,8 +1,8 @@
 import { useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment } from '@react-three/drei';
+import { OrbitControls, Environment, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { RiceMoundConfig, FoodItem } from '../types';
+import { RiceMoundConfig, FoodItem, NutritionEstimate } from '../types';
 
 interface Plate3DProps {
   plateScale: number;
@@ -10,6 +10,7 @@ interface Plate3DProps {
   onRiceMoundChange: (config: RiceMoundConfig) => void;
   foods: FoodItem[];
   theme: 'light' | 'dark';
+  estimate: NutritionEstimate;
 }
 
 function Plate({ scale }: { scale: number }) {
@@ -27,19 +28,39 @@ function Plate({ scale }: { scale: number }) {
   );
 }
 
-function RiceMound({ config }: { config: RiceMoundConfig }) {
+function RiceMound({ config, estimate }: { config: RiceMoundConfig; estimate: NutritionEstimate }) {
   const meshRef = useRef<THREE.Mesh>(null);
   
   return (
-    <mesh ref={meshRef} castShadow position={[0, config.height / 2, 0]}>
-      <sphereGeometry args={[1, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2]} />
-      <meshStandardMaterial 
-        color="#f8f8f0" 
-        roughness={0.9} 
-        metalness={0.0}
-      />
-      <group scale={[config.radiusX, config.height, config.radiusZ]} />
-    </mesh>
+    <group>
+      <mesh 
+        ref={meshRef} 
+        castShadow 
+        position={[0, 0, 0]}
+        scale={[config.radiusX, config.height, config.radiusZ]}
+      >
+        <sphereGeometry args={[1, 32, 16]} />
+        <meshStandardMaterial 
+          color="#f8f8f0" 
+          roughness={0.9} 
+          metalness={0.0}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      
+      <Html position={[0, config.height * 1.2, 0]} center>
+        <div className="rice-hud">
+          <div className="rice-hud-primary">{estimate.grams}g</div>
+          <div className="rice-hud-secondary">{estimate.kcal} kcal</div>
+          <div className="rice-hud-range">
+            {estimate.gramsLow}–{estimate.gramsHigh}g (±20%)
+          </div>
+          <div className="rice-hud-tertiary">
+            ≈ {estimate.centong} centong • {estimate.sendokMakan} sdm
+          </div>
+        </div>
+      </Html>
+    </group>
   );
 }
 
@@ -58,7 +79,7 @@ function FoodItemMesh({ food }: { food: FoodItem }) {
   );
 }
 
-export default function Plate3D({ plateScale, riceMound, foods, theme }: Plate3DProps) {
+export default function Plate3D({ plateScale, riceMound, foods, theme, estimate }: Plate3DProps) {
   const bgColor = theme === 'dark' ? '#0a0e1a' : '#f8f9fa';
   
   return (
@@ -84,7 +105,7 @@ export default function Plate3D({ plateScale, riceMound, foods, theme }: Plate3D
         />
         
         <Plate scale={plateScale} />
-        <RiceMound config={riceMound} />
+        <RiceMound config={riceMound} estimate={estimate} />
         
         {foods.map(food => (
           <FoodItemMesh key={food.id} food={food} />

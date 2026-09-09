@@ -26,46 +26,36 @@ export default function ControlPanel({
   return (
     <div className="control-panel">
       <div className="control-section">
-        <h3>🍚 Bentuk Nasi</h3>
+        <h3>🍚 Besar Porsi Nasi</h3>
         
-        <label>Lebar (X): {riceMound.radiusX.toFixed(2)}</label>
+        <div className="portion-display">
+          <div className="portion-grams">{estimate.grams}g</div>
+          <div className="portion-label">nasi putih</div>
+        </div>
+        
+        <label>Ubah Ukuran Porsi</label>
         <input
           type="range"
           min="0.3"
           max="2.0"
           step="0.05"
-          value={riceMound.radiusX}
-          onChange={(e) => onRiceMoundChange({
-            ...riceMound,
-            radiusX: parseFloat(e.target.value)
-          })}
+          value={(riceMound.radiusX + riceMound.radiusZ + riceMound.height) / 3}
+          onChange={(e) => {
+            const scale = parseFloat(e.target.value);
+            onRiceMoundChange({
+              radiusX: scale * 1.2,
+              radiusZ: scale * 1.0,
+              height: scale * 0.5,
+            });
+          }}
+          className="portion-slider"
         />
         
-        <label>Panjang (Z): {riceMound.radiusZ.toFixed(2)}</label>
-        <input
-          type="range"
-          min="0.3"
-          max="2.0"
-          step="0.05"
-          value={riceMound.radiusZ}
-          onChange={(e) => onRiceMoundChange({
-            ...riceMound,
-            radiusZ: parseFloat(e.target.value)
-          })}
-        />
-        
-        <label>Tinggi: {riceMound.height.toFixed(2)}</label>
-        <input
-          type="range"
-          min="0.1"
-          max="1.5"
-          step="0.05"
-          value={riceMound.height}
-          onChange={(e) => onRiceMoundChange({
-            ...riceMound,
-            height: parseFloat(e.target.value)
-          })}
-        />
+        <div className="portion-hints">
+          <span>Sedikit</span>
+          <span>Sedang</span>
+          <span>Banyak</span>
+        </div>
       </div>
 
       <div className="control-section">

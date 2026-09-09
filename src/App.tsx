@@ -50,6 +50,7 @@ function App() {
             onRiceMoundChange={setRiceMound}
             foods={foods}
             theme={theme}
+            estimate={estimate}
           />
         </div>
         
