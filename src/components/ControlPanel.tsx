@@ -26,34 +26,6 @@ export default function ControlPanel({
   return (
     <div className="control-panel">
       <div className="control-section">
-        <h3>🍚 Besar Porsi Nasi</h3>
-        
-        <label>Ubah Ukuran Porsi</label>
-        <input
-          type="range"
-          min="0.5"
-          max="2.0"
-          step="0.05"
-          value={(riceMound.radiusX / 1.2 + riceMound.radiusZ / 1.0 + riceMound.height / 0.5) / 3}
-          onChange={(e) => {
-            const scale = parseFloat(e.target.value);
-            onRiceMoundChange({
-              radiusX: scale * 1.2,
-              radiusZ: scale * 1.0,
-              height: scale * 0.5,
-            });
-          }}
-          className="portion-slider"
-        />
-        
-        <div className="portion-hints">
-          <span>Sedikit</span>
-          <span>Sedang</span>
-          <span>Banyak</span>
-        </div>
-      </div>
-
-      <div className="control-section">
         <h3>🍽️ Ukuran Piring</h3>
         <div className="preset-buttons">
           {PLATE_SIZES.map(size => (
@@ -126,6 +98,36 @@ export default function ControlPanel({
           </div>
         </div>
       )}
+
+      <div className="control-section collapsed">
+        <details>
+          <summary>⚙️ Refine Ukuran Nasi</summary>
+          <div className="refine-controls">
+            <label>Ubah Ukuran Porsi</label>
+            <input
+              type="range"
+              min="0.5"
+              max="2.0"
+              step="0.05"
+              value={(riceMound.radiusX / 1.2 + riceMound.radiusZ / 1.0 + riceMound.height / 0.5) / 3}
+              onChange={(e) => {
+                const scale = parseFloat(e.target.value);
+                onRiceMoundChange({
+                  radiusX: scale * 1.2,
+                  radiusZ: scale * 1.0,
+                  height: scale * 0.5,
+                });
+              }}
+              className="portion-slider"
+            />
+            <div className="portion-hints">
+              <span>Sedikit</span>
+              <span>Sedang</span>
+              <span>Banyak</span>
+            </div>
+          </div>
+        </details>
+      </div>
 
       <div className="control-section">
         <div className="disclaimer">

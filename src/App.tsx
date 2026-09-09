@@ -43,15 +43,31 @@ function App() {
       </header>
       
       <main className="main-content">
-        <div className="canvas-container">
-          <Plate3D
-            plateScale={plateSize.scale}
-            riceMound={riceMound}
-            onRiceMoundChange={setRiceMound}
-            foods={foods}
-            theme={theme}
-            estimate={estimate}
-          />
+        <div className="canvas-section">
+          <div className="canvas-container">
+            <Plate3D
+              plateScale={plateSize.scale}
+              riceMound={riceMound}
+              onRiceMoundChange={setRiceMound}
+              foods={foods}
+              theme={theme}
+            />
+          </div>
+          
+          <div className="metrics-dock">
+            <div className="metric-primary">
+              <span className="metric-value">{estimate.grams}</span>
+              <span className="metric-unit">g</span>
+            </div>
+            <div className="metric-secondary">
+              <span className="metric-label">kalori:</span>
+              <span className="metric-value">{estimate.kcal}</span>
+            </div>
+            <div className="metric-range">
+              <span className="range-band">{estimate.gramsLow}–{estimate.gramsHigh}g</span>
+              <span className="range-label">(±20%)</span>
+            </div>
+          </div>
         </div>
         
         <ControlPanel

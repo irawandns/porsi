@@ -105,8 +105,15 @@ body {
   overflow: hidden;
 }
 
+.canvas-section {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--primary-bg);
+}
+
 .canvas-container {
   position: relative;
+  flex: 1;
   background-color: var(--primary-bg);
 }
 
@@ -122,6 +129,77 @@ body {
   font-size: 0.75rem;
   pointer-events: none;
   z-index: 5;
+}
+
+.metrics-dock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  padding: 1.5rem 2rem;
+  background: var(--secondary-bg);
+  border-top: 2px solid var(--border);
+  box-shadow: 0 -2px 8px var(--shadow);
+}
+
+.metric-primary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.metric-primary .metric-value {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.metric-primary .metric-unit {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.metric-secondary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.metric-secondary .metric-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.metric-secondary .metric-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.metric-range {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.range-band {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--warning);
+  padding: 0.25rem 0.75rem;
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 0.5rem;
+}
+
+.range-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
 .rice-hud {
@@ -237,6 +315,21 @@ body {
 
 .estimate-details .value-display:last-child {
   border-bottom: none;
+}
+
+.refine-controls {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-top: 0.5rem;
+}
+
+.refine-controls label {
+  display: block;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
 }
 
 .control-section label {
