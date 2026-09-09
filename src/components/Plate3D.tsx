@@ -1,8 +1,8 @@
 import { useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Html } from '@react-three/drei';
+import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
-import { RiceMoundConfig, FoodItem, NutritionEstimate } from '../types';
+import { RiceMoundConfig, FoodItem } from '../types';
 
 interface Plate3DProps {
   plateScale: number;
@@ -10,7 +10,6 @@ interface Plate3DProps {
   onRiceMoundChange: (config: RiceMoundConfig) => void;
   foods: FoodItem[];
   theme: 'light' | 'dark';
-  estimate: NutritionEstimate;
 }
 
 function Plate({ scale }: { scale: number }) {
@@ -28,7 +27,7 @@ function Plate({ scale }: { scale: number }) {
   );
 }
 
-function RiceMound({ config, estimate }: { config: RiceMoundConfig; estimate: NutritionEstimate }) {
+function RiceMound({ config }: { config: RiceMoundConfig }) {
   const meshRef = useRef<THREE.Mesh>(null);
   
   return (
@@ -60,19 +59,6 @@ function RiceMound({ config, estimate }: { config: RiceMoundConfig; estimate: Nu
           metalness={0.0}
         />
       </mesh>
-      
-      <Html position={[0, config.height * 1.2, 0]} center occlude>
-        <div className="rice-hud">
-          <div className="rice-hud-primary">{estimate.grams}g</div>
-          <div className="rice-hud-secondary">{estimate.kcal} kcal</div>
-          <div className="rice-hud-range">
-            {estimate.gramsLow}–{estimate.gramsHigh}g (±20%)
-          </div>
-          <div className="rice-hud-tertiary">
-            ≈ {estimate.centong} centong • {estimate.sendokMakan} sdm
-          </div>
-        </div>
-      </Html>
     </group>
   );
 }
@@ -92,7 +78,7 @@ function FoodItemMesh({ food }: { food: FoodItem }) {
   );
 }
 
-export default function Plate3D({ plateScale, riceMound, foods, theme, estimate }: Plate3DProps) {
+export default function Plate3D({ plateScale, riceMound, foods, theme }: Plate3DProps) {
   const bgColor = theme === 'dark' ? '#0a0e1a' : '#f8f9fa';
   
   return (
@@ -118,7 +104,7 @@ export default function Plate3D({ plateScale, riceMound, foods, theme, estimate 
         />
         
         <Plate scale={plateScale} />
-        <RiceMound config={riceMound} estimate={estimate} />
+        <RiceMound config={riceMound} />
         
         {foods.map(food => (
           <FoodItemMesh key={food.id} food={food} />
