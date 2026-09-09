@@ -28,24 +28,19 @@ export default function ControlPanel({
       <div className="control-section">
         <h3>🍚 Besar Porsi Nasi</h3>
         
-        <div className="portion-display">
-          <div className="portion-grams">{estimate.grams}g</div>
-          <div className="portion-label">nasi putih</div>
-        </div>
-        
         <label>Ubah Ukuran Porsi</label>
         <input
           type="range"
           min="0.5"
           max="2.0"
           step="0.05"
-          value={(riceMound.radiusX / 0.6 + riceMound.radiusZ / 0.5 + riceMound.height / 0.25) / 3}
+          value={(riceMound.radiusX / 1.2 + riceMound.radiusZ / 1.0 + riceMound.height / 0.5) / 3}
           onChange={(e) => {
             const scale = parseFloat(e.target.value);
             onRiceMoundChange({
-              radiusX: scale * 0.6,
-              radiusZ: scale * 0.5,
-              height: scale * 0.25,
+              radiusX: scale * 1.2,
+              radiusZ: scale * 1.0,
+              height: scale * 0.5,
             });
           }}
           className="portion-slider"

@@ -32,14 +32,28 @@ function RiceMound({ config, estimate }: { config: RiceMoundConfig; estimate: Nu
   const meshRef = useRef<THREE.Mesh>(null);
   
   return (
-    <group>
+    <group position={[0, 0.05, 0]}>
       <mesh 
         ref={meshRef} 
         castShadow 
-        position={[0, config.height / 2, 0]}
+        position={[0, 0, 0]}
         scale={[config.radiusX, config.height, config.radiusZ]}
       >
         <sphereGeometry args={[1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
+        <meshStandardMaterial 
+          color="#f8f8f0" 
+          roughness={0.9} 
+          metalness={0.0}
+        />
+      </mesh>
+      
+      <mesh 
+        castShadow 
+        position={[0, 0, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        scale={[config.radiusX, config.radiusZ, 1]}
+      >
+        <circleGeometry args={[1, 32]} />
         <meshStandardMaterial 
           color="#f8f8f0" 
           roughness={0.9} 

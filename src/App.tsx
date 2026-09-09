@@ -8,9 +8,9 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [plateSize, setPlateSize] = useState<PlateSize>(PLATE_SIZES[0]);
   const [riceMound, setRiceMound] = useState<RiceMoundConfig>({
-    radiusX: 0.6,
-    radiusZ: 0.5,
-    height: 0.25,
+    radiusX: 1.2,
+    radiusZ: 1.0,
+    height: 0.5,
   });
   const [foods, setFoods] = useState<FoodItem[]>(INITIAL_FOODS);
 
