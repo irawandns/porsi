@@ -21,6 +21,13 @@ export interface FoodItem {
   enabled: boolean;
 }
 
+export interface PlacedFood {
+  instanceId: string;
+  foodType: 'nasi' | 'ayam' | 'telur';
+  position: [number, number, number];
+  config?: RiceMoundConfig;
+}
+
 export interface NutritionEstimate {
   grams: number;
   kcal: number;
@@ -35,6 +42,9 @@ export interface NutritionEstimate {
 export const RICE_DENSITY = 1.15;
 export const RICE_KCAL_PER_100G = 130;
 export const ERROR_MARGIN = 0.20;
+
+export const AYAM_KCAL = 180;
+export const TELUR_KCAL = 70;
 
 export const PLATE_SIZES: PlateSize[] = [
   { id: 'rumah', name: 'Home Plate', nameBahasa: 'Piring Rumah', scale: 1.0 },
