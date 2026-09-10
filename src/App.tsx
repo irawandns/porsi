@@ -4,7 +4,7 @@ import ControlPanel from './components/ControlPanel';
 import Palette, { PaletteItem } from './components/Palette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { PlateSize, PlacedFood, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
-import { calculateNutritionEstimate } from './utils/calculations';
+import { calculateNutritionEstimate, calculateEllipsoidVolume, fitEllipsoidToVolume } from './utils/calculations';
 import './styles.css';
 
 export interface RaycastHandle {
@@ -82,37 +82,82 @@ function App() {
   // Get collision radius for a food item
   const getFoodRadius = useCallback((food: PlacedFood): number => {
     if (food.foodType === 'nasi' && food.config) {
-      return Math.max(food.config.radiusX, food.config.radiusZ) * 0.95; // Slight forgiveness
+      return Math.max(food.config.radiusX, food.config.radiusZ) * 0.95;
     } else if (food.foodType === 'ayam') {
-      return 0.35; // Box is ~0.6x0.5, use conservative radius
+      return 0.35;
     } else if (food.foodType === 'telur') {
-      return 0.30; // Sphere radius 0.3
+      return 0.30;
     }
     return 0.3;
   }, []);
-
-  // Resolve overlaps by gently pushing the moving food away from others
-  const resolveOverlaps = useCallback((
-    movingFood: PlacedFood,
-    existingFoods: PlacedFood[],
-    plateRadius: number,
-    maxPushDist: number = 1.5 // Prevent teleporting
-  ): [number, number, number] | null => {
-    let x = movingFood.position[0];
-    let z = movingFood.position[2];
-    const y = movingFood.position[1];
-    const startX = x;
-    const startZ = z;
-    const movingRadius = getFoodRadius(movingFood);
-    const epsilon = 0.05; // Small gap between foods
+  
+  // Check if two foods overlap in XZ plane
+  const checkOverlap = useCallback((food1: PlacedFood, food2: PlacedFood): boolean => {
+    const r1 = getFoodRadius(food1);
+    const r2 = getFoodRadius(food2);
+    const dx = food1.position[0] - food2.position[0];
+    const dz = food1.position[2] - food2.position[2];
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    return dist < (r1 + r2 + 0.05);
+  }, [getFoodRadius]);
+  
+  // Merge two nasi mounds into one
+  const mergeNasi = useCallback((nasi1: PlacedFood, nasi2: PlacedFood): PlacedFood => {
+    if (!nasi1.config || !nasi2.config) return nasi1;
     
-    // Multi-pass: iterative separation until fully separated
+    const vol1 = calculateEllipsoidVolume(nasi1.config);
+    const vol2 = calculateEllipsoidVolume(nasi2.config);
+    const totalVolume = vol1 + vol2;
+    
+    const x = (nasi1.position[0] * vol1 + nasi2.position[0] * vol2) / totalVolume;
+    const z = (nasi1.position[2] * vol1 + nasi2.position[2] * vol2) / totalVolume;
+    
+    const newConfig = fitEllipsoidToVolume(totalVolume);
+    
+    return {
+      instanceId: `nasi-${Date.now()}`,
+      foodType: 'nasi',
+      position: [x, 0, z],
+      config: newConfig
+    };
+  }, []);
+
+  // Apply nasi-nasi merge and soft no-overlap for non-nasi pairs
+  const resolveCollisions = useCallback((
+    newFood: PlacedFood,
+    existingFoods: PlacedFood[],
+    plateRadius: number
+  ): { food: PlacedFood; mergedWith: string[] } => {
+    let resultFood = { ...newFood };
+    const mergedIds: string[] = [];
+    
+    // Check for nasi-nasi merges
+    if (resultFood.foodType === 'nasi') {
+      for (const other of existingFoods) {
+        if (other.foodType === 'nasi' && !mergedIds.includes(other.instanceId)) {
+          if (checkOverlap(resultFood, other)) {
+            resultFood = mergeNasi(resultFood, other);
+            mergedIds.push(other.instanceId);
+          }
+        }
+      }
+    }
+    
+    // Soft no-overlap for non-nasi-nasi pairs (nasi↔lauk, lauk↔lauk)
+    const movingRadius = getFoodRadius(resultFood);
+    let x = resultFood.position[0];
+    let z = resultFood.position[2];
+    const epsilon = 0.05;
+    
     const maxPasses = 5;
     for (let pass = 0; pass < maxPasses; pass++) {
       let anyOverlap = false;
       
       for (const other of existingFoods) {
-        if (other.instanceId === movingFood.instanceId) continue;
+        if (mergedIds.includes(other.instanceId)) continue;
+        
+        // Skip if both are nasi (already merged above)
+        if (resultFood.foodType === 'nasi' && other.foodType === 'nasi') continue;
         
         const otherRadius = getFoodRadius(other);
         const dx = x - other.position[0];
@@ -123,7 +168,6 @@ function App() {
         if (dist < minDist) {
           anyOverlap = true;
           
-          // Handle zero-distance case with random jitter
           if (dist < 0.001) {
             const angle = Math.random() * Math.PI * 2;
             const jitterDist = minDist * 0.5;
@@ -132,7 +176,6 @@ function App() {
             continue;
           }
           
-          // Full push to separate on this pass (not divided)
           const pushDist = minDist - dist;
           const nx = dx / dist;
           const nz = dz / dist;
@@ -141,56 +184,22 @@ function App() {
         }
       }
       
-      if (!anyOverlap) break; // Fully separated, exit early
+      if (!anyOverlap) break;
     }
     
-    // Clamp to plate first
-    let plateDist = Math.sqrt(x * x + z * z);
+    // Clamp to plate
+    const plateDist = Math.sqrt(x * x + z * z);
     const maxDist = plateRadius * 0.9;
     if (plateDist > maxDist) {
       const scale = maxDist / plateDist;
       x *= scale;
       z *= scale;
-      
-      // Re-check overlaps after clamp (might have pushed back into others)
-      // One more pass to adjust if needed
-      for (const other of existingFoods) {
-        if (other.instanceId === movingFood.instanceId) continue;
-        
-        const otherRadius = getFoodRadius(other);
-        const dx = x - other.position[0];
-        const dz = z - other.position[2];
-        const dist = Math.sqrt(dx * dx + dz * dz);
-        const minDist = movingRadius + otherRadius + epsilon;
-        
-        if (dist < minDist && dist > 0.001) {
-          // Small adjustment after clamp
-          const pushDist = (minDist - dist) * 0.5; // Gentler post-clamp
-          const nx = dx / dist;
-          const nz = dz / dist;
-          x += nx * pushDist;
-          z += nz * pushDist;
-        }
-      }
-      
-      // Re-clamp if adjustment pushed us out again
-      plateDist = Math.sqrt(x * x + z * z);
-      if (plateDist > maxDist) {
-        const scale = maxDist / plateDist;
-        x *= scale;
-        z *= scale;
-      }
     }
     
-    // Check total displacement to prevent teleporting
-    const totalPush = Math.sqrt((x - startX) ** 2 + (z - startZ) ** 2);
-    if (totalPush > maxPushDist) {
-      // Unresolvable without teleporting - return null
-      return null;
-    }
+    resultFood.position = [x, resultFood.position[1], z];
     
-    return [x, y, z];
-  }, [getFoodRadius]);
+    return { food: resultFood, mergedWith: mergedIds };
+  }, [getFoodRadius, checkOverlap, mergeNasi]);
 
   const handleDragMove = (x: number, y: number) => {
     dragScreenPosRef.current = { x, y };
@@ -203,30 +212,39 @@ function App() {
       const foodType = itemId as 'nasi' | 'ayam' | 'telur';
       
       if (foodType === 'nasi') {
-        const newFood: PlacedFood = {
-          instanceId: `${foodType}-${Date.now()}`,
+        const newNasi: PlacedFood = {
+          instanceId: `nasi-${Date.now()}`,
           foodType,
           position: [hitPos.x, 0, hitPos.z],
           config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
         };
-        const resolvedPos = resolveOverlaps(newFood, placedFoods, plateSize.scale * 2);
-        if (resolvedPos) {
-          newFood.position = resolvedPos;
-          setPlacedFoods(prev => [...prev, newFood]);
-        }
-        // If null (unresolvable), refuse silently - no placement
+        
+        setPlacedFoods(prev => {
+          const { food: resolvedFood, mergedWith } = resolveCollisions(newNasi, prev, plateSize.scale * 2);
+          const filtered = prev.filter(f => !mergedWith.includes(f.instanceId));
+          return [...filtered, resolvedFood];
+        });
+        
+        // Select the merged/placed nasi after a short delay to get the correct instanceId
+        setTimeout(() => {
+          setPlacedFoods(current => {
+            const lastNasi = [...current].reverse().find(f => f.foodType === 'nasi');
+            if (lastNasi) setSelectedFoodId(lastNasi.instanceId);
+            return current;
+          });
+        }, 10);
       } else {
-        const newFood: PlacedFood = {
+        const newLauk: PlacedFood = {
           instanceId: `${foodType}-${Date.now()}`,
           foodType,
           position: [hitPos.x, 0.15, hitPos.z]
         };
-        const resolvedPos = resolveOverlaps(newFood, placedFoods, plateSize.scale * 2);
-        if (resolvedPos) {
-          newFood.position = resolvedPos;
-          setPlacedFoods(prev => [...prev, newFood]);
-        }
-        // If null (unresolvable), refuse silently - no placement
+        
+        setPlacedFoods(prev => {
+          const { food: resolvedFood, mergedWith } = resolveCollisions(newLauk, prev, plateSize.scale * 2);
+          const filtered = prev.filter(f => !mergedWith.includes(f.instanceId));
+          return [...filtered, resolvedFood];
+        });
       }
     }
     
@@ -241,34 +259,33 @@ function App() {
         food.instanceId === instanceId ? { ...food, ...updates } : food
       );
       
-      // Only resolve overlaps if position changed (place + body-drag)
-      // Do NOT resolve on config-only changes (height/footprint sculpt)
+      // Only check collisions if position changed (body drag)
       if (updates.position) {
         const movingFood = updatedFoods.find(f => f.instanceId === instanceId);
         if (movingFood) {
           const others = updatedFoods.filter(f => f.instanceId !== instanceId);
-          // Higher maxPushDist for drag (2.5) to allow more freedom during sculpt
-          const resolvedPos = resolveOverlaps(movingFood, others, plateSize.scale * 2, 2.5);
-          if (resolvedPos) {
+          const { food: resolvedFood, mergedWith } = resolveCollisions(movingFood, others, plateSize.scale * 2);
+          
+          if (mergedWith.length > 0) {
+            // Merge occurred - remove merged foods and add result
+            const filtered = updatedFoods.filter(f => f.instanceId !== instanceId && !mergedWith.includes(f.instanceId));
+            setSelectedFoodId(resolvedFood.instanceId);
+            return [...filtered, resolvedFood];
+          } else {
+            // No merge, just position adjustment
             return updatedFoods.map(food =>
               food.instanceId === instanceId
-                ? { ...food, position: resolvedPos }
+                ? { ...food, position: resolvedFood.position }
                 : food
             );
           }
-          // If unresolvable, keep previous position (but still apply config if present)
-          return prev.map(food =>
-            food.instanceId === instanceId
-              ? { ...food, ...(updates.config ? { config: updates.config } : {}) }
-              : food
-          );
         }
       }
       
       // Config-only or other updates: apply without collision check
       return updatedFoods;
     });
-  }, [resolveOverlaps, plateSize.scale]);
+  }, [resolveCollisions, plateSize.scale]);
 
   return (
     <div className="app">

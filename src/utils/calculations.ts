@@ -61,3 +61,29 @@ export function calculateNutritionEstimate(config: RiceMoundConfig): NutritionEs
     centong: Math.round(centong * 10) / 10,
   };
 }
+
+// Fit ellipsoid dimensions to match target volume
+// Prefers growing footprint + modest height over tall towers
+export function fitEllipsoidToVolume(targetVolume: number): RiceMoundConfig {
+  // Target: V = (2/3) * π * rx * h * rz = targetVolume
+  // Strategy: prefer wider footprint (rx, rz) over height
+  // Start with aspect ratio similar to default (rx:rz ≈ 1.2:1.0)
+  // Keep height modest (h ≤ 1.5 * max(rx, rz))
+  
+  const aspectRatio = 1.2; // rx / rz
+  const heightRatio = 0.6; // h / max(rx, rz) for normal mounds
+  
+  // Solve for rz: V = (2/3) * π * aspectRatio * rz * heightRatio * rz * rz
+  // V = (2/3) * π * aspectRatio * heightRatio * rz^3
+  const coefficient = (2 / 3) * Math.PI * aspectRatio * heightRatio;
+  const rz = Math.pow(targetVolume / coefficient, 1 / 3);
+  const rx = rz * aspectRatio;
+  const height = Math.max(rx, rz) * heightRatio;
+  
+  // Clamp to reasonable bounds
+  const radiusX = Math.max(0.5, Math.min(3.0, rx));
+  const radiusZ = Math.max(0.5, Math.min(3.0, rz));
+  const finalHeight = Math.max(0.3, Math.min(2.0, height));
+  
+  return { radiusX, radiusZ, height: finalHeight };
+}
