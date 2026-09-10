@@ -544,12 +544,12 @@ function RaycastHandler({
 }) {
   const { camera, gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
-  const [hitPoint, setHitPoint] = useState<THREE.Vector3 | null>(null);
+  const hitPointRef = useRef<THREE.Vector3 | null>(null);
 
-  const performRaycast = useCallback(() => {
+  useFrame(() => {
     if (!dragScreenPos) {
-      setHitPoint(null);
-      return null;
+      hitPointRef.current = null;
+      return;
     }
 
     const canvas = gl.domElement;
@@ -563,7 +563,10 @@ function RaycastHandler({
     raycaster.current.setFromCamera(mouse, camera);
     
     const plateMesh = scene.getObjectByName('plate');
-    if (!plateMesh) return null;
+    if (!plateMesh) {
+      hitPointRef.current = null;
+      return;
+    }
 
     const intersects = raycaster.current.intersectObject(plateMesh, false);
     
@@ -579,20 +582,14 @@ function RaycastHandler({
         point.z *= scale;
       }
       
-      setHitPoint(point);
-      return point;
+      hitPointRef.current = point;
+    } else {
+      hitPointRef.current = null;
     }
-    
-    setHitPoint(null);
-    return null;
-  }, [dragScreenPos, camera, gl, scene, plateScale]);
+  });
 
-  if (dragScreenPos) {
-    performRaycast();
-  }
-
-  return hitPoint ? (
-    <mesh position={[hitPoint.x, 0.02, hitPoint.z]}>
+  return hitPointRef.current ? (
+    <mesh position={[hitPointRef.current.x, 0.02, hitPointRef.current.z]}>
       <ringGeometry args={[0.3, 0.4, 32]} />
       <meshBasicMaterial color="#4a9eff" transparent opacity={0.6} side={THREE.DoubleSide} />
     </mesh>
@@ -627,6 +624,16 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
         shadows
         camera={{ position: [4, 4, 6], fov: 50 }}
         style={{ background: bgColor }}
+        dpr={[1, Math.min(2, typeof window !== 'undefined' ? window.devicePixelRatio : 2)]}
+        onCreated={({ gl }) => {
+          gl.domElement.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            console.error('WebGL context lost');
+          });
+          gl.domElement.addEventListener('webglcontextrestored', () => {
+            console.log('WebGL context restored');
+          });
+        }}
       >
         <ambientLight intensity={0.5} />
         <directionalLight
