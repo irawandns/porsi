@@ -91,36 +91,54 @@ function App() {
     return 0.3;
   }, []);
 
-  // Resolve overlaps by pushing the moving food away from others
+  // Resolve overlaps by gently pushing the moving food away from others
   const resolveOverlaps = useCallback((
     movingFood: PlacedFood,
     existingFoods: PlacedFood[],
-    plateRadius: number
-  ): [number, number, number] => {
+    plateRadius: number,
+    maxPushDist: number = 1.5 // Prevent teleporting
+  ): [number, number, number] | null => {
     let x = movingFood.position[0];
     let z = movingFood.position[2];
     const y = movingFood.position[1];
+    const startX = x;
+    const startZ = z;
     const movingRadius = getFoodRadius(movingFood);
     const epsilon = 0.05; // Small gap between foods
     
-    // Resolve overlaps with other foods
-    for (const other of existingFoods) {
-      if (other.instanceId === movingFood.instanceId) continue;
+    // Multi-pass: gentle iterative separation
+    const maxPasses = 3;
+    for (let pass = 0; pass < maxPasses; pass++) {
+      let moved = false;
       
-      const otherRadius = getFoodRadius(other);
-      const dx = x - other.position[0];
-      const dz = z - other.position[2];
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      const minDist = movingRadius + otherRadius + epsilon;
-      
-      if (dist < minDist && dist > 0.001) {
-        // Push away along separation axis
-        const pushDist = minDist - dist;
-        const nx = dx / dist;
-        const nz = dz / dist;
-        x += nx * pushDist;
-        z += nz * pushDist;
+      for (const other of existingFoods) {
+        if (other.instanceId === movingFood.instanceId) continue;
+        
+        const otherRadius = getFoodRadius(other);
+        const dx = x - other.position[0];
+        const dz = z - other.position[2];
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        const minDist = movingRadius + otherRadius + epsilon;
+        
+        if (dist < minDist && dist > 0.001) {
+          // Gentle push along separation axis
+          const pushDist = (minDist - dist) / maxPasses; // Distribute over passes
+          const nx = dx / dist;
+          const nz = dz / dist;
+          x += nx * pushDist;
+          z += nz * pushDist;
+          moved = true;
+        }
       }
+      
+      if (!moved) break; // Converged early
+    }
+    
+    // Check total displacement to prevent teleporting
+    const totalPush = Math.sqrt((x - startX) ** 2 + (z - startZ) ** 2);
+    if (totalPush > maxPushDist) {
+      // Unresolvable without teleporting - return null
+      return null;
     }
     
     // Soft clamp to plate radius
@@ -153,8 +171,11 @@ function App() {
           config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
         };
         const resolvedPos = resolveOverlaps(newFood, placedFoods, plateSize.scale * 2);
-        newFood.position = resolvedPos;
-        setPlacedFoods(prev => [...prev, newFood]);
+        if (resolvedPos) {
+          newFood.position = resolvedPos;
+          setPlacedFoods(prev => [...prev, newFood]);
+        }
+        // If null (unresolvable), refuse silently - no placement
       } else {
         const newFood: PlacedFood = {
           instanceId: `${foodType}-${Date.now()}`,
@@ -162,8 +183,11 @@ function App() {
           position: [hitPos.x, 0.15, hitPos.z]
         };
         const resolvedPos = resolveOverlaps(newFood, placedFoods, plateSize.scale * 2);
-        newFood.position = resolvedPos;
-        setPlacedFoods(prev => [...prev, newFood]);
+        if (resolvedPos) {
+          newFood.position = resolvedPos;
+          setPlacedFoods(prev => [...prev, newFood]);
+        }
+        // If null (unresolvable), refuse silently - no placement
       }
     }
     
@@ -177,17 +201,22 @@ function App() {
         food.instanceId === instanceId ? { ...food, ...updates } : food
       );
       
-      // If position or config changed, resolve overlaps
+      // If position or config changed, resolve overlaps with higher tolerance for drag
       if (updates.position || updates.config) {
         const movingFood = updatedFoods.find(f => f.instanceId === instanceId);
         if (movingFood) {
           const others = updatedFoods.filter(f => f.instanceId !== instanceId);
-          const resolvedPos = resolveOverlaps(movingFood, others, plateSize.scale * 2);
-          return updatedFoods.map(food =>
-            food.instanceId === instanceId
-              ? { ...food, position: resolvedPos }
-              : food
-          );
+          // Higher maxPushDist for drag (2.0) to allow more freedom during sculpt
+          const resolvedPos = resolveOverlaps(movingFood, others, plateSize.scale * 2, 2.0);
+          if (resolvedPos) {
+            return updatedFoods.map(food =>
+              food.instanceId === instanceId
+                ? { ...food, position: resolvedPos }
+                : food
+            );
+          }
+          // If unresolvable, keep current position (don't apply the update)
+          return prev;
         }
       }
       
