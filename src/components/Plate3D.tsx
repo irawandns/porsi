@@ -59,15 +59,16 @@ interface PlacedFoodMeshProps {
   isSelected: boolean;
   onPointerDown: (e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => void;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
-  pendingUpdate: Partial<PlacedFood> | null;
+  pendingUpdatesRef: React.RefObject<Map<string, Partial<PlacedFood>>>;
 }
 
-function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdate }: PlacedFoodMeshProps) {
+function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdatesRef }: PlacedFoodMeshProps) {
   const bodyRef = useRef<THREE.Mesh>(null);
   const baseRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
 
   useFrame(() => {
+    const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
     if (!pendingUpdate) return;
 
     if (pendingUpdate.position && groupRef.current) {
@@ -89,8 +90,8 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
     }
   });
   if (food.foodType === 'nasi' && food.config) {
-    const config = pendingUpdate?.config ? { ...food.config, ...pendingUpdate.config } : food.config;
-    const pos = pendingUpdate?.position || food.position;
+    const config = food.config;
+    const pos = food.position;
     const maxRadius = Math.max(config.radiusX, config.radiusZ);
     
     return (
@@ -163,9 +164,9 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
   }
   
   const laukRef = useRef<THREE.Mesh>(null);
-  const pos = pendingUpdate?.position || food.position;
 
   useFrame(() => {
+    const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
     if (pendingUpdate?.position && laukRef.current) {
       laukRef.current.position.set(
         pendingUpdate.position[0],
@@ -174,6 +175,8 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
       );
     }
   });
+
+  const pos = food.position;
 
   const geometry = food.foodType === 'ayam' 
     ? <boxGeometry args={[0.6, 0.3, 0.5]} />
@@ -525,7 +528,7 @@ function SceneContent({
           isSelected={selectedFoodId === food.instanceId}
           onPointerDown={handlePointerDown}
           onClick={handleClick}
-          pendingUpdate={pendingUpdatesRef.current.get(food.instanceId) || null}
+          pendingUpdatesRef={pendingUpdatesRef}
         />
       ))}
     </>
