@@ -79,6 +79,62 @@ function App() {
     setIsDragging(true);
   };
   
+  // Get collision radius for a food item
+  const getFoodRadius = useCallback((food: PlacedFood): number => {
+    if (food.foodType === 'nasi' && food.config) {
+      return Math.max(food.config.radiusX, food.config.radiusZ) * 0.95; // Slight forgiveness
+    } else if (food.foodType === 'ayam') {
+      return 0.35; // Box is ~0.6x0.5, use conservative radius
+    } else if (food.foodType === 'telur') {
+      return 0.30; // Sphere radius 0.3
+    }
+    return 0.3;
+  }, []);
+
+  // Resolve overlaps by pushing the moving food away from others
+  const resolveOverlaps = useCallback((
+    movingFood: PlacedFood,
+    existingFoods: PlacedFood[],
+    plateRadius: number
+  ): [number, number, number] => {
+    let x = movingFood.position[0];
+    let z = movingFood.position[2];
+    const y = movingFood.position[1];
+    const movingRadius = getFoodRadius(movingFood);
+    const epsilon = 0.05; // Small gap between foods
+    
+    // Resolve overlaps with other foods
+    for (const other of existingFoods) {
+      if (other.instanceId === movingFood.instanceId) continue;
+      
+      const otherRadius = getFoodRadius(other);
+      const dx = x - other.position[0];
+      const dz = z - other.position[2];
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const minDist = movingRadius + otherRadius + epsilon;
+      
+      if (dist < minDist && dist > 0.001) {
+        // Push away along separation axis
+        const pushDist = minDist - dist;
+        const nx = dx / dist;
+        const nz = dz / dist;
+        x += nx * pushDist;
+        z += nz * pushDist;
+      }
+    }
+    
+    // Soft clamp to plate radius
+    const plateDist = Math.sqrt(x * x + z * z);
+    const maxDist = plateRadius * 0.9;
+    if (plateDist > maxDist) {
+      const scale = maxDist / plateDist;
+      x *= scale;
+      z *= scale;
+    }
+    
+    return [x, y, z];
+  }, [getFoodRadius]);
+
   const handleDragMove = (x: number, y: number) => {
     dragScreenPosRef.current = { x, y };
   };
@@ -90,18 +146,24 @@ function App() {
       const foodType = itemId as 'nasi' | 'ayam' | 'telur';
       
       if (foodType === 'nasi') {
-        setPlacedFoods(prev => [...prev, {
+        const newFood: PlacedFood = {
           instanceId: `${foodType}-${Date.now()}`,
           foodType,
           position: [hitPos.x, 0, hitPos.z],
           config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
-        }]);
+        };
+        const resolvedPos = resolveOverlaps(newFood, placedFoods, plateSize.scale * 2);
+        newFood.position = resolvedPos;
+        setPlacedFoods(prev => [...prev, newFood]);
       } else {
-        setPlacedFoods(prev => [...prev, {
+        const newFood: PlacedFood = {
           instanceId: `${foodType}-${Date.now()}`,
           foodType,
           position: [hitPos.x, 0.15, hitPos.z]
-        }]);
+        };
+        const resolvedPos = resolveOverlaps(newFood, placedFoods, plateSize.scale * 2);
+        newFood.position = resolvedPos;
+        setPlacedFoods(prev => [...prev, newFood]);
       }
     }
     
@@ -110,10 +172,28 @@ function App() {
   };
   
   const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
-    setPlacedFoods(prev => prev.map(food => 
-      food.instanceId === instanceId ? { ...food, ...updates } : food
-    ));
-  }, []);
+    setPlacedFoods(prev => {
+      const updatedFoods = prev.map(food => 
+        food.instanceId === instanceId ? { ...food, ...updates } : food
+      );
+      
+      // If position or config changed, resolve overlaps
+      if (updates.position || updates.config) {
+        const movingFood = updatedFoods.find(f => f.instanceId === instanceId);
+        if (movingFood) {
+          const others = updatedFoods.filter(f => f.instanceId !== instanceId);
+          const resolvedPos = resolveOverlaps(movingFood, others, plateSize.scale * 2);
+          return updatedFoods.map(food =>
+            food.instanceId === instanceId
+              ? { ...food, position: resolvedPos }
+              : food
+          );
+        }
+      }
+      
+      return updatedFoods;
+    });
+  }, [resolveOverlaps, plateSize.scale]);
 
   return (
     <div className="app">
