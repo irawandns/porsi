@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
@@ -8,10 +8,61 @@ interface Plate3DProps {
   plateScale: number;
   theme: 'light' | 'dark';
   placedFoods: PlacedFood[];
-  onFoodPlaced: (food: PlacedFood) => void;
   isDragging: boolean;
-  dragType: string | null;
   dragScreenPos: { x: number; y: number } | null;
+  onRaycastRequest?: (screenPos: { x: number; y: number }) => { x: number; y: number; z: number } | null;
+}
+
+interface SceneContextProps {
+  plateScale: number;
+  onRaycastRequest?: (screenPos: { x: number; y: number }) => { x: number; y: number; z: number } | null;
+}
+
+function SceneContent({ plateScale, onRaycastRequest }: SceneContextProps) {
+  const { camera, gl, scene } = useThree();
+  const raycaster = useRef(new THREE.Raycaster());
+
+  useEffect(() => {
+    if (onRaycastRequest) {
+      const handler = (screenPos: { x: number; y: number }) => {
+        const canvas = gl.domElement;
+        const rect = canvas.getBoundingClientRect();
+        
+        const mouse = new THREE.Vector2(
+          ((screenPos.x - rect.left) / rect.width) * 2 - 1,
+          -((screenPos.y - rect.top) / rect.height) * 2 + 1
+        );
+
+        raycaster.current.setFromCamera(mouse, camera);
+        
+        const plateMesh = scene.getObjectByName('plate');
+        if (!plateMesh) return null;
+
+        const intersects = raycaster.current.intersectObject(plateMesh, false);
+        
+        if (intersects.length > 0) {
+          const point = intersects[0].point.clone();
+          
+          const plateRadius = 2 * plateScale * 0.9;
+          const distance = Math.sqrt(point.x * point.x + point.z * point.z);
+          
+          if (distance > plateRadius) {
+            const scale = plateRadius / distance;
+            point.x *= scale;
+            point.z *= scale;
+          }
+          
+          return { x: point.x, y: point.y, z: point.z };
+        }
+        
+        return null;
+      };
+
+      (window as any).__porsiRaycast = handler;
+    }
+  }, [camera, gl, scene, plateScale, onRaycastRequest]);
+
+  return null;
 }
 
 function Plate({ scale }: { scale: number }) {
@@ -83,17 +134,13 @@ function PlacedFoodMesh({ food }: { food: PlacedFood }) {
 function RaycastHandler({ 
   plateScale, 
   isDragging, 
-  dragScreenPos, 
-  dragType,
-  onFoodPlaced 
+  dragScreenPos
 }: { 
   plateScale: number;
   isDragging: boolean;
   dragScreenPos: { x: number; y: number } | null;
-  dragType: string | null;
-  onFoodPlaced: (food: PlacedFood) => void;
 }) {
-  const { camera, gl, size } = useThree();
+  const { camera, gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
   const [hitPoint, setHitPoint] = useState<THREE.Vector3 | null>(null);
 
@@ -103,23 +150,20 @@ function RaycastHandler({
       return null;
     }
 
+    const canvas = gl.domElement;
+    const rect = canvas.getBoundingClientRect();
+    
     const mouse = new THREE.Vector2(
-      (dragScreenPos.x / size.width) * 2 - 1,
-      -(dragScreenPos.y / size.height) * 2 + 1
+      ((dragScreenPos.x - rect.left) / rect.width) * 2 - 1,
+      -((dragScreenPos.y - rect.top) / rect.height) * 2 + 1
     );
 
     raycaster.current.setFromCamera(mouse, camera);
     
-    const plateMesh = gl.domElement.closest('.canvas-container')?.querySelector('canvas');
+    const plateMesh = scene.getObjectByName('plate');
     if (!plateMesh) return null;
 
-    const scene = camera.parent;
-    if (!scene) return null;
-
-    const plateGroup = scene.getObjectByName('plate');
-    if (!plateGroup) return null;
-
-    const intersects = raycaster.current.intersectObject(plateGroup, false);
+    const intersects = raycaster.current.intersectObject(plateMesh, false);
     
     if (intersects.length > 0) {
       const point = intersects[0].point.clone();
@@ -139,32 +183,10 @@ function RaycastHandler({
     
     setHitPoint(null);
     return null;
-  }, [dragScreenPos, camera, gl, size, plateScale]);
+  }, [dragScreenPos, camera, gl, scene, plateScale]);
 
   if (isDragging && dragScreenPos) {
     performRaycast();
-  }
-
-  if (!isDragging && hitPoint && dragType) {
-    const point = hitPoint;
-    const foodType = dragType as 'nasi' | 'ayam' | 'telur';
-    
-    if (foodType === 'nasi') {
-      onFoodPlaced({
-        instanceId: `${foodType}-${Date.now()}`,
-        foodType,
-        position: [point.x, 0, point.z],
-        config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
-      });
-    } else {
-      onFoodPlaced({
-        instanceId: `${foodType}-${Date.now()}`,
-        foodType,
-        position: [point.x, 0.15, point.z]
-      });
-    }
-    
-    setHitPoint(null);
   }
 
   return hitPoint && isDragging ? (
@@ -179,10 +201,9 @@ export default function Plate3D({
   plateScale, 
   theme, 
   placedFoods,
-  onFoodPlaced,
   isDragging,
-  dragType,
-  dragScreenPos
+  dragScreenPos,
+  onRaycastRequest
 }: Plate3DProps) {
   const bgColor = theme === 'dark' ? '#0a0e1a' : '#f8f9fa';
   const controlsRef = useRef<any>(null);
@@ -231,12 +252,15 @@ export default function Plate3D({
           enabled={!isDragging}
         />
         
+        <SceneContent
+          plateScale={plateScale}
+          onRaycastRequest={onRaycastRequest}
+        />
+        
         <RaycastHandler
           plateScale={plateScale}
           isDragging={isDragging}
           dragScreenPos={dragScreenPos}
-          dragType={dragType}
-          onFoodPlaced={onFoodPlaced}
         />
         
         <Environment preset="apartment" />

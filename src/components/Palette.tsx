@@ -12,7 +12,7 @@ interface PaletteProps {
   items: PaletteItem[];
   onDragStart: (itemId: string) => void;
   onDragMove: (x: number, y: number) => void;
-  onDragEnd: (x: number, y: number) => void;
+  onDragEnd: (itemId: string, x: number, y: number) => void;
 }
 
 export default function Palette({ items, onDragStart, onDragMove, onDragEnd }: PaletteProps) {
@@ -45,7 +45,7 @@ export default function Palette({ items, onDragStart, onDragMove, onDragEnd }: P
     const target = e.currentTarget as HTMLElement;
     target.releasePointerCapture(e.pointerId);
     
-    onDragEnd(e.clientX, e.clientY);
+    onDragEnd(dragging, e.clientX, e.clientY);
     setDragging(null);
     dragStartPos.current = null;
   }, [dragging, onDragEnd]);

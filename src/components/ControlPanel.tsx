@@ -1,28 +1,14 @@
-import { RiceMoundConfig, PlateSize, FoodItem, NutritionEstimate, PLATE_SIZES } from '../types';
+import { PlateSize, PLATE_SIZES } from '../types';
 
 interface ControlPanelProps {
-  riceMound: RiceMoundConfig;
-  onRiceMoundChange: (config: RiceMoundConfig) => void;
   plateSize: PlateSize;
   onPlateSizeChange: (size: PlateSize) => void;
-  foods: FoodItem[];
-  onFoodToggle: (foodId: string) => void;
-  estimate: NutritionEstimate;
 }
 
 export default function ControlPanel({
-  riceMound,
-  onRiceMoundChange,
   plateSize,
   onPlateSizeChange,
-  foods,
-  onFoodToggle,
-  estimate,
 }: ControlPanelProps) {
-  const totalKcal = estimate.kcal + foods.reduce((sum, food) => 
-    food.enabled ? sum + food.kcal : sum, 0
-  );
-  
   return (
     <div className="control-panel">
       <div className="control-section">
@@ -39,94 +25,6 @@ export default function ControlPanel({
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="control-section collapsed">
-        <details>
-          <summary>📊 Detail Estimasi</summary>
-          <div className="estimate-details">
-            <div className="value-display">
-              <span>Berat:</span>
-              <strong>{estimate.grams}g</strong>
-            </div>
-            <div className="value-display">
-              <span>Kalori:</span>
-              <strong>{estimate.kcal} kcal</strong>
-            </div>
-            <div className="value-display">
-              <span>Rentang:</span>
-              <strong>{estimate.gramsLow}–{estimate.gramsHigh}g</strong>
-            </div>
-            <div className="value-display">
-              <span>Sendok makan:</span>
-              <strong>{estimate.sendokMakan}</strong>
-            </div>
-            <div className="value-display">
-              <span>Centong:</span>
-              <strong>{estimate.centong}</strong>
-            </div>
-          </div>
-        </details>
-      </div>
-
-      <div className="control-section">
-        <h3>🍗 Lauk Tambahan</h3>
-        <div className="food-items">
-          {foods.map(food => (
-            <div key={food.id} className="food-item-control">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={food.enabled}
-                  onChange={() => onFoodToggle(food.id)}
-                />
-                <span>{food.nameBahasa}</span>
-              </label>
-              <span className="food-kcal">+{food.kcal} kcal</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {foods.some(f => f.enabled) && (
-        <div className="control-section">
-          <div className="estimate-card">
-            <div className="estimate-value" style={{ fontSize: '2rem' }}>
-              {totalKcal}
-            </div>
-            <div className="estimate-label">total kalori (nasi + lauk)</div>
-          </div>
-        </div>
-      )}
-
-      <div className="control-section collapsed">
-        <details>
-          <summary>⚙️ Refine Ukuran Nasi</summary>
-          <div className="refine-controls">
-            <label>Ubah Ukuran Porsi</label>
-            <input
-              type="range"
-              min="0.5"
-              max="2.0"
-              step="0.05"
-              value={(riceMound.radiusX / 1.2 + riceMound.radiusZ / 1.0 + riceMound.height / 0.5) / 3}
-              onChange={(e) => {
-                const scale = parseFloat(e.target.value);
-                onRiceMoundChange({
-                  radiusX: scale * 1.2,
-                  radiusZ: scale * 1.0,
-                  height: scale * 0.5,
-                });
-              }}
-              className="portion-slider"
-            />
-            <div className="portion-hints">
-              <span>Sedikit</span>
-              <span>Sedang</span>
-              <span>Banyak</span>
-            </div>
-          </div>
-        </details>
       </div>
 
       <div className="control-section">
