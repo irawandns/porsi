@@ -181,7 +181,8 @@ function SceneContent({
   const raycaster = useRef(new THREE.Raycaster());
   const orbitRef = useRef<any>(null);
   const [manipulating, setManipulating] = useState(false);
-  const [manipState, setManipState] = useState<ManipState | null>(null);
+  const manipStateRef = useRef<ManipState | null>(null);
+  const pendingUpdatesRef = useRef<Map<string, Partial<PlacedFood>>>(new Map());
 
   const screenToNDC = useCallback((screenPos: { x: number; y: number }) => {
     const canvas = gl.domElement;
@@ -256,9 +257,12 @@ function SceneContent({
   }, [raycastPlate, raycastFood, onRaycastReady]);
 
   useEffect(() => {
-    if (!manipulating || !manipState) return;
+    if (!manipulating) return;
 
     const handleGlobalPointerMove = (e: PointerEvent) => {
+      const manipState = manipStateRef.current;
+      if (!manipState) return;
+
       const currentScreenPos = { x: e.clientX, y: e.clientY };
       const screenDelta = {
         x: currentScreenPos.x - manipState.startScreenPos.x,
@@ -271,7 +275,7 @@ function SceneContent({
       if (!hasMoved && !manipState.moved) return;
       
       if (!manipState.moved) {
-        setManipState({ ...manipState, moved: true });
+        manipStateRef.current = { ...manipState, moved: true };
       }
       
       const { food, part, startConfig, startFoodPos, startMoundCenter } = manipState;
@@ -281,18 +285,29 @@ function SceneContent({
           const heightSensitivity = 0.01;
           const deltaHeight = -screenDelta.y * heightSensitivity;
           const newHeight = Math.max(0.2, Math.min(2.0, startConfig.height + deltaHeight));
-          onFoodUpdate(food.instanceId, { config: { ...food.config, height: newHeight } });
+          
+          if (!isNaN(newHeight) && isFinite(newHeight) && newHeight > 0) {
+            pendingUpdatesRef.current.set(food.instanceId, { 
+              config: { ...food.config, height: newHeight } 
+            });
+          }
         } else if (part === 'body') {
           const hitPos = raycastPlate(currentScreenPos);
           if (hitPos) {
             const plateRadius = 2 * plateScale * 0.9;
             const distance = Math.sqrt(hitPos.x * hitPos.x + hitPos.z * hitPos.z);
             
-            if (distance <= plateRadius) {
-              onFoodUpdate(food.instanceId, { position: [hitPos.x, startFoodPos[1], hitPos.z] });
-            } else {
-              const scale = plateRadius / distance;
-              onFoodUpdate(food.instanceId, { position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] });
+            if (!isNaN(distance) && isFinite(distance)) {
+              if (distance <= plateRadius) {
+                pendingUpdatesRef.current.set(food.instanceId, { 
+                  position: [hitPos.x, startFoodPos[1], hitPos.z] 
+                });
+              } else {
+                const scale = plateRadius / distance;
+                pendingUpdatesRef.current.set(food.instanceId, { 
+                  position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] 
+                });
+              }
             }
           }
         } else if (part === 'foot') {
@@ -306,7 +321,12 @@ function SceneContent({
             
             const newRadiusX = Math.max(0.5, Math.min(2.0, startConfig.radiusX + signedRadialDelta));
             const newRadiusZ = Math.max(0.5, Math.min(2.0, startConfig.radiusZ + signedRadialDelta));
-            onFoodUpdate(food.instanceId, { config: { ...food.config, radiusX: newRadiusX, radiusZ: newRadiusZ } });
+            
+            if (!isNaN(newRadiusX) && !isNaN(newRadiusZ) && isFinite(newRadiusX) && isFinite(newRadiusZ) && newRadiusX > 0 && newRadiusZ > 0) {
+              pendingUpdatesRef.current.set(food.instanceId, { 
+                config: { ...food.config, radiusX: newRadiusX, radiusZ: newRadiusZ } 
+              });
+            }
           }
         }
       } else if (food.foodType !== 'nasi' && startFoodPos) {
@@ -315,26 +335,37 @@ function SceneContent({
           const plateRadius = 2 * plateScale * 0.9;
           const distance = Math.sqrt(hitPos.x * hitPos.x + hitPos.z * hitPos.z);
           
-          if (distance <= plateRadius) {
-            onFoodUpdate(food.instanceId, { position: [hitPos.x, startFoodPos[1], hitPos.z] });
-          } else {
-            const scale = plateRadius / distance;
-            onFoodUpdate(food.instanceId, { position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] });
+          if (!isNaN(distance) && isFinite(distance)) {
+            if (distance <= plateRadius) {
+              pendingUpdatesRef.current.set(food.instanceId, { 
+                position: [hitPos.x, startFoodPos[1], hitPos.z] 
+              });
+            } else {
+              const scale = plateRadius / distance;
+              pendingUpdatesRef.current.set(food.instanceId, { 
+                position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] 
+              });
+            }
           }
         }
       }
     };
 
     const handleGlobalPointerUp = () => {
+      pendingUpdatesRef.current.forEach((updates, instanceId) => {
+        onFoodUpdate(instanceId, updates);
+      });
+      pendingUpdatesRef.current.clear();
+      
       setManipulating(false);
-      setManipState(null);
+      manipStateRef.current = null;
       
       if (orbitRef.current) {
-        orbitRef.current.enabled = true;
+        orbitRef.current.enabled = !isDragging;
       }
     };
 
-    window.addEventListener('pointermove', handleGlobalPointerMove);
+    window.addEventListener('pointermove', handleGlobalPointerMove, { passive: true });
     window.addEventListener('pointerup', handleGlobalPointerUp);
     window.addEventListener('pointercancel', handleGlobalPointerUp);
 
@@ -343,7 +374,7 @@ function SceneContent({
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
     };
-  }, [manipulating, manipState, onFoodUpdate, plateScale, raycastPlate, orbitRef]);
+  }, [manipulating, plateScale, raycastPlate, onFoodUpdate, isDragging]);
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
@@ -353,8 +384,7 @@ function SceneContent({
     }
     
     onSelectFood(food.instanceId);
-    setManipulating(true);
-    setManipState({
+    manipStateRef.current = {
       food,
       part,
       startScreenPos: { x: e.nativeEvent.clientX, y: e.nativeEvent.clientY },
@@ -362,7 +392,8 @@ function SceneContent({
       startFoodPos: [...food.position],
       startMoundCenter: food.position ? { x: food.position[0], z: food.position[2] } : undefined,
       moved: false
-    });
+    };
+    setManipulating(true);
   }, [onSelectFood]);
 
 
@@ -389,7 +420,7 @@ function SceneContent({
         dampingFactor={0.05}
         enabled={!manipulating && !isDragging}
         enableZoom={true}
-        touches={{ ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE }}
+        touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_ROTATE }}
       />
       
       <mesh 
