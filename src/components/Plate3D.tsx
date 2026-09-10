@@ -27,6 +27,7 @@ interface SceneProps {
   onSelectFood: (id: string | null) => void;
   onFoodUpdate: (instanceId: string, updates: Partial<PlacedFood>) => void;
   onRaycastReady: (handle: RaycastHandle) => void;
+  isDragging: boolean;
 }
 
 function Plate({ scale }: { scale: number }) {
@@ -57,17 +58,18 @@ interface PlacedFoodMeshProps {
   food: PlacedFood;
   isSelected: boolean;
   onPointerDown: (e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => void;
-  onClick: (e: ThreeEvent<MouseEvent>, food: PlacedFood) => void;
+  onClick: (e: ThreeEvent<MouseEvent>) => void;
 }
 
 function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFoodMeshProps) {
   if (food.foodType === 'nasi' && food.config) {
     const config = food.config;
     const pos = food.position;
+    const maxRadius = Math.max(config.radiusX, config.radiusZ);
     
     return (
       <group>
-        {isSelected && <SelectionRing position={pos} radius={Math.max(config.radiusX, config.radiusZ) * 1.2} />}
+        {isSelected && <SelectionRing position={pos} radius={maxRadius * 1.2} />}
         
         <group position={[pos[0], 0.05, pos[2]]}>
           <mesh 
@@ -76,7 +78,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
             scale={[config.radiusX, config.height, config.radiusZ]}
             name={`nasi-body-${food.instanceId}`}
             onPointerDown={(e) => onPointerDown(e, food, 'body')}
-            onClick={(e) => onClick(e, food)}
+            onClick={(e) => onClick(e)}
           >
             <sphereGeometry args={[1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
             <meshStandardMaterial 
@@ -93,7 +95,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
             scale={[config.radiusX, config.radiusZ, 1]}
             name={`nasi-base-${food.instanceId}`}
             onPointerDown={(e) => onPointerDown(e, food, 'foot')}
-            onClick={(e) => onClick(e, food)}
+            onClick={(e) => onClick(e)}
           >
             <circleGeometry args={[1, 32]} />
             <meshStandardMaterial 
@@ -104,15 +106,28 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
           </mesh>
           
           {isSelected && (
-            <mesh
-              position={[0, config.height, 0]}
-              name={`nasi-top-${food.instanceId}`}
-              onPointerDown={(e) => onPointerDown(e, food, 'top')}
-              onClick={(e) => onClick(e, food)}
-            >
-              <sphereGeometry args={[0.15, 16, 16]} />
-              <meshStandardMaterial color="#4a9eff" emissive="#4a9eff" emissiveIntensity={0.5} />
-            </mesh>
+            <>
+              <mesh
+                position={[0, config.height, 0]}
+                name={`nasi-top-${food.instanceId}`}
+                onPointerDown={(e) => onPointerDown(e, food, 'top')}
+                onClick={(e) => onClick(e)}
+              >
+                <sphereGeometry args={[0.15, 16, 16]} />
+                <meshStandardMaterial color="#4a9eff" emissive="#4a9eff" emissiveIntensity={0.5} />
+              </mesh>
+              
+              <mesh
+                position={[maxRadius * 0.7, 0, 0]}
+                rotation={[-Math.PI / 2, 0, 0]}
+                name={`nasi-foot-handle-${food.instanceId}`}
+                onPointerDown={(e) => onPointerDown(e, food, 'foot')}
+                onClick={(e) => onClick(e)}
+              >
+                <ringGeometry args={[0.08, 0.12, 16]} />
+                <meshStandardMaterial color="#4a9eff" emissive="#4a9eff" emissiveIntensity={0.3} />
+              </mesh>
+            </>
           )}
         </group>
       </group>
@@ -134,7 +149,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
         position={food.position}
         name={`lauk-${food.instanceId}`}
         onPointerDown={(e) => onPointerDown(e, food, 'body')}
-        onClick={(e) => onClick(e, food)}
+        onClick={(e) => onClick(e)}
       >
         {geometry}
         <meshStandardMaterial color={isSelected ? selectedColor : color} roughness={0.7} metalness={0.1} />
@@ -143,25 +158,30 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
   );
 }
 
+interface ManipState {
+  food: PlacedFood;
+  part: 'top' | 'body' | 'foot';
+  startScreenPos: { x: number; y: number };
+  startConfig?: RiceMoundConfig;
+  startFoodPos?: [number, number, number];
+  startMoundCenter?: { x: number; z: number };
+  moved: boolean;
+}
+
 function SceneContent({ 
   plateScale, 
   placedFoods, 
   selectedFoodId,
   onSelectFood,
   onFoodUpdate,
-  onRaycastReady 
+  onRaycastReady,
+  isDragging 
 }: SceneProps) {
   const { camera, gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
   const orbitRef = useRef<any>(null);
   const [manipulating, setManipulating] = useState(false);
-  const [manipState, setManipState] = useState<{
-    food: PlacedFood;
-    part: 'top' | 'body' | 'foot';
-    startPos: THREE.Vector3;
-    startConfig?: RiceMoundConfig;
-    startFoodPos?: [number, number, number];
-  } | null>(null);
+  const [manipState, setManipState] = useState<ManipState | null>(null);
 
   const screenToNDC = useCallback((screenPos: { x: number; y: number }) => {
     const canvas = gl.domElement;
@@ -235,6 +255,96 @@ function SceneContent({
     onRaycastReady({ raycastPlate, raycastFood });
   }, [raycastPlate, raycastFood, onRaycastReady]);
 
+  useEffect(() => {
+    if (!manipulating || !manipState) return;
+
+    const handleGlobalPointerMove = (e: PointerEvent) => {
+      const currentScreenPos = { x: e.clientX, y: e.clientY };
+      const screenDelta = {
+        x: currentScreenPos.x - manipState.startScreenPos.x,
+        y: currentScreenPos.y - manipState.startScreenPos.y
+      };
+      
+      const moveThreshold = 5;
+      const hasMoved = Math.abs(screenDelta.x) > moveThreshold || Math.abs(screenDelta.y) > moveThreshold;
+      
+      if (!hasMoved && !manipState.moved) return;
+      
+      if (!manipState.moved) {
+        setManipState({ ...manipState, moved: true });
+      }
+      
+      const { food, part, startConfig, startFoodPos, startMoundCenter } = manipState;
+      
+      if (food.foodType === 'nasi' && food.config && startConfig && startFoodPos) {
+        if (part === 'top') {
+          const heightSensitivity = 0.01;
+          const deltaHeight = -screenDelta.y * heightSensitivity;
+          const newHeight = Math.max(0.2, Math.min(2.0, startConfig.height + deltaHeight));
+          onFoodUpdate(food.instanceId, { config: { ...food.config, height: newHeight } });
+        } else if (part === 'body') {
+          const hitPos = raycastPlate(currentScreenPos);
+          if (hitPos) {
+            const plateRadius = 2 * plateScale * 0.9;
+            const distance = Math.sqrt(hitPos.x * hitPos.x + hitPos.z * hitPos.z);
+            
+            if (distance <= plateRadius) {
+              onFoodUpdate(food.instanceId, { position: [hitPos.x, startFoodPos[1], hitPos.z] });
+            } else {
+              const scale = plateRadius / distance;
+              onFoodUpdate(food.instanceId, { position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] });
+            }
+          }
+        } else if (part === 'foot') {
+          const hitPos = raycastPlate(currentScreenPos);
+          if (hitPos && startMoundCenter) {
+            const startRadius = Math.sqrt(startConfig.radiusX * startConfig.radiusX + startConfig.radiusZ * startConfig.radiusZ) / Math.sqrt(2);
+            const currentDistX = hitPos.x - startMoundCenter.x;
+            const currentDistZ = hitPos.z - startMoundCenter.z;
+            const currentDist = Math.sqrt(currentDistX * currentDistX + currentDistZ * currentDistZ);
+            const signedRadialDelta = currentDist - startRadius;
+            
+            const newRadiusX = Math.max(0.5, Math.min(2.0, startConfig.radiusX + signedRadialDelta));
+            const newRadiusZ = Math.max(0.5, Math.min(2.0, startConfig.radiusZ + signedRadialDelta));
+            onFoodUpdate(food.instanceId, { config: { ...food.config, radiusX: newRadiusX, radiusZ: newRadiusZ } });
+          }
+        }
+      } else if (food.foodType !== 'nasi' && startFoodPos) {
+        const hitPos = raycastPlate(currentScreenPos);
+        if (hitPos) {
+          const plateRadius = 2 * plateScale * 0.9;
+          const distance = Math.sqrt(hitPos.x * hitPos.x + hitPos.z * hitPos.z);
+          
+          if (distance <= plateRadius) {
+            onFoodUpdate(food.instanceId, { position: [hitPos.x, startFoodPos[1], hitPos.z] });
+          } else {
+            const scale = plateRadius / distance;
+            onFoodUpdate(food.instanceId, { position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] });
+          }
+        }
+      }
+    };
+
+    const handleGlobalPointerUp = () => {
+      setManipulating(false);
+      setManipState(null);
+      
+      if (orbitRef.current) {
+        orbitRef.current.enabled = true;
+      }
+    };
+
+    window.addEventListener('pointermove', handleGlobalPointerMove);
+    window.addEventListener('pointerup', handleGlobalPointerUp);
+    window.addEventListener('pointercancel', handleGlobalPointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handleGlobalPointerMove);
+      window.removeEventListener('pointerup', handleGlobalPointerUp);
+      window.removeEventListener('pointercancel', handleGlobalPointerUp);
+    };
+  }, [manipulating, manipState, onFoodUpdate, plateScale, raycastPlate, orbitRef]);
+
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
     
@@ -242,83 +352,26 @@ function SceneContent({
       orbitRef.current.enabled = false;
     }
     
+    onSelectFood(food.instanceId);
     setManipulating(true);
     setManipState({
       food,
       part,
-      startPos: new THREE.Vector3(e.point.x, e.point.y, e.point.z),
+      startScreenPos: { x: e.nativeEvent.clientX, y: e.nativeEvent.clientY },
       startConfig: food.config ? { ...food.config } : undefined,
-      startFoodPos: [...food.position]
+      startFoodPos: [...food.position],
+      startMoundCenter: food.position ? { x: food.position[0], z: food.position[2] } : undefined,
+      moved: false
     });
+  }, [onSelectFood]);
+
+
+  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
   }, []);
 
-  const handlePointerMove = useCallback((e: ThreeEvent<PointerEvent>) => {
-    if (!manipulating || !manipState) return;
-    
+  const handlePlateClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
-    
-    const currentPos = new THREE.Vector3(e.point.x, e.point.y, e.point.z);
-    const delta = currentPos.clone().sub(manipState.startPos);
-    
-    const { food, part, startConfig, startFoodPos } = manipState;
-    
-    if (food.foodType === 'nasi' && food.config && startConfig && startFoodPos) {
-      if (part === 'top') {
-        const newHeight = Math.max(0.2, Math.min(2.0, startConfig.height + delta.y));
-        onFoodUpdate(food.instanceId, { config: { ...food.config, height: newHeight } });
-      } else if (part === 'body') {
-        const plateRadius = 2 * plateScale * 0.9;
-        const newX = startFoodPos[0] + delta.x;
-        const newZ = startFoodPos[2] + delta.z;
-        const distance = Math.sqrt(newX * newX + newZ * newZ);
-        
-        if (distance <= plateRadius) {
-          onFoodUpdate(food.instanceId, { position: [newX, startFoodPos[1], newZ] });
-        } else {
-          const scale = plateRadius / distance;
-          onFoodUpdate(food.instanceId, { position: [newX * scale, startFoodPos[1], newZ * scale] });
-        }
-      } else if (part === 'foot') {
-        const radialDelta = Math.sqrt(delta.x * delta.x + delta.z * delta.z);
-        const newRadiusX = Math.max(0.5, Math.min(2.0, startConfig.radiusX + radialDelta * 0.5));
-        const newRadiusZ = Math.max(0.5, Math.min(2.0, startConfig.radiusZ + radialDelta * 0.5));
-        onFoodUpdate(food.instanceId, { config: { ...food.config, radiusX: newRadiusX, radiusZ: newRadiusZ } });
-      }
-    } else if (food.foodType !== 'nasi' && startFoodPos) {
-      const plateRadius = 2 * plateScale * 0.9;
-      const newX = startFoodPos[0] + delta.x;
-      const newZ = startFoodPos[2] + delta.z;
-      const distance = Math.sqrt(newX * newX + newZ * newZ);
-      
-      if (distance <= plateRadius) {
-        onFoodUpdate(food.instanceId, { position: [newX, startFoodPos[1], newZ] });
-      } else {
-        const scale = plateRadius / distance;
-        onFoodUpdate(food.instanceId, { position: [newX * scale, startFoodPos[1], newZ * scale] });
-      }
-    }
-  }, [manipulating, manipState, onFoodUpdate, plateScale]);
-
-  const handlePointerUp = useCallback(() => {
-    if (manipulating) {
-      setManipulating(false);
-      setManipState(null);
-      
-      if (orbitRef.current) {
-        orbitRef.current.enabled = true;
-      }
-    }
-  }, [manipulating]);
-
-  const handleClick = useCallback((e: ThreeEvent<MouseEvent>, food: PlacedFood) => {
-    e.stopPropagation();
-    
-    if (!manipulating) {
-      onSelectFood(food.instanceId);
-    }
-  }, [manipulating, onSelectFood]);
-
-  const handleCanvasClick = useCallback(() => {
     if (!manipulating) {
       onSelectFood(null);
     }
@@ -334,22 +387,24 @@ function SceneContent({
         maxPolarAngle={Math.PI / 2}
         enableDamping
         dampingFactor={0.05}
-        enabled={!manipulating}
+        enabled={!manipulating && !isDragging}
+        enableZoom={true}
+        touches={{ ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE }}
       />
       
       <mesh 
         receiveShadow 
         rotation={[-Math.PI / 2, 0, 0]} 
         position={[0, -0.06, 0]}
-        onClick={handleCanvasClick}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
+        onClick={handlePlateClick}
       >
         <planeGeometry args={[20, 20]} />
         <shadowMaterial opacity={0.3} />
       </mesh>
       
-      <Plate scale={plateScale} />
+      <group onClick={handlePlateClick}>
+        <Plate scale={plateScale} />
+      </group>
       
       {placedFoods.map(food => (
         <PlacedFoodMesh
@@ -366,11 +421,9 @@ function SceneContent({
 
 function RaycastHandler({ 
   plateScale, 
-  isDragging, 
   dragScreenPos
 }: { 
   plateScale: number;
-  isDragging: boolean;
   dragScreenPos: { x: number; y: number } | null;
 }) {
   const { camera, gl, scene } = useThree();
@@ -418,11 +471,11 @@ function RaycastHandler({
     return null;
   }, [dragScreenPos, camera, gl, scene, plateScale]);
 
-  if (isDragging && dragScreenPos) {
+  if (dragScreenPos) {
     performRaycast();
   }
 
-  return hitPoint && isDragging ? (
+  return hitPoint ? (
     <mesh position={[hitPoint.x, 0.02, hitPoint.z]}>
       <ringGeometry args={[0.3, 0.4, 32]} />
       <meshBasicMaterial color="#4a9eff" transparent opacity={0.6} side={THREE.DoubleSide} />
@@ -481,11 +534,11 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           onSelectFood={onSelectFood}
           onFoodUpdate={onFoodUpdate}
           onRaycastReady={handleRaycastReady}
+          isDragging={isDragging}
         />
         
         <RaycastHandler
           plateScale={plateScale}
-          isDragging={isDragging}
           dragScreenPos={dragScreenPos}
         />
         
