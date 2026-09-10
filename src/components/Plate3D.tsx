@@ -4,6 +4,53 @@ import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PlacedFood, RiceMoundConfig } from '../types';
 
+// Simple grain shader injection for rice texture
+const addGrainShader = (shader: any) => {
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <common>',
+    `#include <common>
+    varying vec3 vWorldPos;`
+  );
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <worldpos_vertex>',
+    `#include <worldpos_vertex>
+    vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+  );
+  
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <common>',
+    `#include <common>
+    varying vec3 vWorldPos;
+    
+    float grain(vec3 pos) {
+      // Simple 3D noise approximation for grain
+      vec3 p = pos * 120.0;
+      float n = fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+      return n * 0.08; // Subtle grain strength
+    }`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <color_fragment>',
+    `#include <color_fragment>
+    diffuseColor.rgb *= (1.0 + grain(vWorldPos) - 0.04);`
+  );
+};
+
+// Shared nasi material with cream matte finish + grain
+const nasiMaterial = new THREE.MeshStandardMaterial({
+  color: 0xfff4e6, // Warmer cream (more yellow/peachy than f8f8f0)
+  roughness: 0.92,
+  metalness: 0.0,
+});
+nasiMaterial.onBeforeCompile = addGrainShader;
+
+const nasiMaterialSelected = new THREE.MeshStandardMaterial({
+  color: 0xfffef8, // Slightly brighter cream for selection
+  roughness: 0.92,
+  metalness: 0.0,
+});
+nasiMaterialSelected.onBeforeCompile = addGrainShader;
+
 export interface RaycastHandle {
   raycastPlate: (screenPos: { x: number; y: number }) => { x: number; y: number; z: number } | null;
   raycastFood: (screenPos: { x: number; y: number }) => { food: PlacedFood; part: 'top' | 'body' | 'foot' } | null;
@@ -66,6 +113,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
   const bodyRef = useRef<THREE.Mesh>(null);
   const baseRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
+  const aoBlobRef = useRef<THREE.Mesh>(null);
 
   useFrame(() => {
     const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
@@ -87,6 +135,11 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
       if (baseRef.current) {
         baseRef.current.scale.set(newConfig.radiusX, newConfig.radiusZ, 1);
       }
+      // Update AO blob to scale with mound
+      if (aoBlobRef.current) {
+        const maxRad = Math.max(newConfig.radiusX, newConfig.radiusZ);
+        aoBlobRef.current.scale.set(maxRad * 1.2, maxRad * 1.2, 1);
+      }
     }
   });
   if (food.foodType === 'nasi' && food.config) {
@@ -99,6 +152,22 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
         {isSelected && <SelectionRing position={pos} radius={maxRadius * 1.2} />}
         
         <group ref={groupRef} position={[pos[0], 0.05, pos[2]]}>
+          {/* Soft AO blob under rim */}
+          <mesh 
+            ref={aoBlobRef}
+            position={[0, 0.001, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            scale={[maxRadius * 1.2, maxRadius * 1.2, 1]}
+          >
+            <ringGeometry args={[0.8, 1.0, 32]} />
+            <meshBasicMaterial 
+              color={0x000000}
+              transparent
+              opacity={0.18}
+              depthWrite={false}
+            />
+          </mesh>
+
           <mesh 
             ref={bodyRef}
             castShadow 
@@ -107,13 +176,9 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
             name={`nasi-body-${food.instanceId}`}
             onPointerDown={(e) => onPointerDown(e, food, 'body')}
             onClick={(e) => onClick(e)}
+            material={isSelected ? nasiMaterialSelected : nasiMaterial}
           >
             <sphereGeometry args={[1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-            <meshStandardMaterial 
-              color={isSelected ? "#fffef8" : "#f8f8f0"}
-              roughness={0.9} 
-              metalness={0.0}
-            />
           </mesh>
           
           <mesh 
@@ -125,13 +190,9 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
             name={`nasi-base-${food.instanceId}`}
             onPointerDown={(e) => onPointerDown(e, food, 'foot')}
             onClick={(e) => onClick(e)}
+            material={isSelected ? nasiMaterialSelected : nasiMaterial}
           >
             <circleGeometry args={[1, 32]} />
-            <meshStandardMaterial 
-              color={isSelected ? "#fffef8" : "#f8f8f0"}
-              roughness={0.9} 
-              metalness={0.0}
-            />
           </mesh>
           
           {isSelected && (
@@ -677,17 +738,19 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           });
         }}
       >
-        <ambientLight intensity={0.5} />
+        <ambientLight intensity={0.4} />
         <directionalLight
           position={[5, 8, 5]}
-          intensity={1}
+          intensity={1.3}
+          color="#ffe5cc"
           castShadow={!isMobile}
           shadow-mapSize-width={isMobile ? 512 : 2048}
           shadow-mapSize-height={isMobile ? 512 : 2048}
         />
         <spotLight
           position={[-5, 5, 5]}
-          intensity={0.3}
+          intensity={0.25}
+          color="#cce5ff"
           angle={0.6}
           penumbra={1}
         />
