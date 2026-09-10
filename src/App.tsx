@@ -106,11 +106,54 @@ function App() {
     const movingRadius = getFoodRadius(movingFood);
     const epsilon = 0.05; // Small gap between foods
     
-    // Multi-pass: gentle iterative separation
-    const maxPasses = 3;
+    // Multi-pass: iterative separation until fully separated
+    const maxPasses = 5;
     for (let pass = 0; pass < maxPasses; pass++) {
-      let moved = false;
+      let anyOverlap = false;
       
+      for (const other of existingFoods) {
+        if (other.instanceId === movingFood.instanceId) continue;
+        
+        const otherRadius = getFoodRadius(other);
+        const dx = x - other.position[0];
+        const dz = z - other.position[2];
+        let dist = Math.sqrt(dx * dx + dz * dz);
+        const minDist = movingRadius + otherRadius + epsilon;
+        
+        if (dist < minDist) {
+          anyOverlap = true;
+          
+          // Handle zero-distance case with random jitter
+          if (dist < 0.001) {
+            const angle = Math.random() * Math.PI * 2;
+            const jitterDist = minDist * 0.5;
+            x += Math.cos(angle) * jitterDist;
+            z += Math.sin(angle) * jitterDist;
+            continue;
+          }
+          
+          // Full push to separate on this pass (not divided)
+          const pushDist = minDist - dist;
+          const nx = dx / dist;
+          const nz = dz / dist;
+          x += nx * pushDist;
+          z += nz * pushDist;
+        }
+      }
+      
+      if (!anyOverlap) break; // Fully separated, exit early
+    }
+    
+    // Clamp to plate first
+    let plateDist = Math.sqrt(x * x + z * z);
+    const maxDist = plateRadius * 0.9;
+    if (plateDist > maxDist) {
+      const scale = maxDist / plateDist;
+      x *= scale;
+      z *= scale;
+      
+      // Re-check overlaps after clamp (might have pushed back into others)
+      // One more pass to adjust if needed
       for (const other of existingFoods) {
         if (other.instanceId === movingFood.instanceId) continue;
         
@@ -121,17 +164,22 @@ function App() {
         const minDist = movingRadius + otherRadius + epsilon;
         
         if (dist < minDist && dist > 0.001) {
-          // Gentle push along separation axis
-          const pushDist = (minDist - dist) / maxPasses; // Distribute over passes
+          // Small adjustment after clamp
+          const pushDist = (minDist - dist) * 0.5; // Gentler post-clamp
           const nx = dx / dist;
           const nz = dz / dist;
           x += nx * pushDist;
           z += nz * pushDist;
-          moved = true;
         }
       }
       
-      if (!moved) break; // Converged early
+      // Re-clamp if adjustment pushed us out again
+      plateDist = Math.sqrt(x * x + z * z);
+      if (plateDist > maxDist) {
+        const scale = maxDist / plateDist;
+        x *= scale;
+        z *= scale;
+      }
     }
     
     // Check total displacement to prevent teleporting
@@ -139,15 +187,6 @@ function App() {
     if (totalPush > maxPushDist) {
       // Unresolvable without teleporting - return null
       return null;
-    }
-    
-    // Soft clamp to plate radius
-    const plateDist = Math.sqrt(x * x + z * z);
-    const maxDist = plateRadius * 0.9;
-    if (plateDist > maxDist) {
-      const scale = maxDist / plateDist;
-      x *= scale;
-      z *= scale;
     }
     
     return [x, y, z];
@@ -197,17 +236,19 @@ function App() {
   
   const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
     setPlacedFoods(prev => {
+      // Apply the update first
       const updatedFoods = prev.map(food => 
         food.instanceId === instanceId ? { ...food, ...updates } : food
       );
       
-      // If position or config changed, resolve overlaps with higher tolerance for drag
-      if (updates.position || updates.config) {
+      // Only resolve overlaps if position changed (place + body-drag)
+      // Do NOT resolve on config-only changes (height/footprint sculpt)
+      if (updates.position) {
         const movingFood = updatedFoods.find(f => f.instanceId === instanceId);
         if (movingFood) {
           const others = updatedFoods.filter(f => f.instanceId !== instanceId);
-          // Higher maxPushDist for drag (2.0) to allow more freedom during sculpt
-          const resolvedPos = resolveOverlaps(movingFood, others, plateSize.scale * 2, 2.0);
+          // Higher maxPushDist for drag (2.5) to allow more freedom during sculpt
+          const resolvedPos = resolveOverlaps(movingFood, others, plateSize.scale * 2, 2.5);
           if (resolvedPos) {
             return updatedFoods.map(food =>
               food.instanceId === instanceId
@@ -215,11 +256,16 @@ function App() {
                 : food
             );
           }
-          // If unresolvable, keep current position (don't apply the update)
-          return prev;
+          // If unresolvable, keep previous position (but still apply config if present)
+          return prev.map(food =>
+            food.instanceId === instanceId
+              ? { ...food, ...(updates.config ? { config: updates.config } : {}) }
+              : food
+          );
         }
       }
       
+      // Config-only or other updates: apply without collision check
       return updatedFoods;
     });
   }, [resolveOverlaps, plateSize.scale]);
