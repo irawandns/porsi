@@ -4,18 +4,52 @@ import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PlacedFood, RiceMoundConfig } from '../types';
 
-// Shared nasi material with cream matte finish
+// Simple grain shader injection for rice texture
+const addGrainShader = (shader: any) => {
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <common>',
+    `#include <common>
+    varying vec3 vWorldPos;`
+  );
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <worldpos_vertex>',
+    `#include <worldpos_vertex>
+    vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+  );
+  
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <common>',
+    `#include <common>
+    varying vec3 vWorldPos;
+    
+    float grain(vec3 pos) {
+      // Simple 3D noise approximation for grain
+      vec3 p = pos * 120.0;
+      float n = fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+      return n * 0.08; // Subtle grain strength
+    }`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <color_fragment>',
+    `#include <color_fragment>
+    diffuseColor.rgb *= (1.0 + grain(vWorldPos) - 0.04);`
+  );
+};
+
+// Shared nasi material with cream matte finish + grain
 const nasiMaterial = new THREE.MeshStandardMaterial({
   color: 0xfff4e6, // Warmer cream (more yellow/peachy than f8f8f0)
   roughness: 0.92,
   metalness: 0.0,
 });
+nasiMaterial.onBeforeCompile = addGrainShader;
 
 const nasiMaterialSelected = new THREE.MeshStandardMaterial({
   color: 0xfffef8, // Slightly brighter cream for selection
   roughness: 0.92,
   metalness: 0.0,
 });
+nasiMaterialSelected.onBeforeCompile = addGrainShader;
 
 export interface RaycastHandle {
   raycastPlate: (screenPos: { x: number; y: number }) => { x: number; y: number; z: number } | null;
