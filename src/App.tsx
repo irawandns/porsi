@@ -1,10 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Plate3D from './components/Plate3D';
 import ControlPanel from './components/ControlPanel';
 import Palette, { PaletteItem } from './components/Palette';
 import { PlateSize, PlacedFood, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
 import { calculateNutritionEstimate } from './utils/calculations';
 import './styles.css';
+
+export interface RaycastHandle {
+  raycastPlate: (screenPos: { x: number; y: number }) => { x: number; y: number; z: number } | null;
+  raycastFood: (screenPos: { x: number; y: number }) => { food: PlacedFood; part: 'top' | 'body' | 'foot' } | null;
+}
 
 const PALETTE_ITEMS: PaletteItem[] = [
   { id: 'nasi', name: 'Rice', nameBahasa: 'Nasi', color: '#f8f8f0', icon: '🍚' },
@@ -16,8 +21,10 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [plateSize, setPlateSize] = useState<PlateSize>(PLATE_SIZES[0]);
   const [placedFoods, setPlacedFoods] = useState<PlacedFood[]>([]);
+  const [selectedFoodId, setSelectedFoodId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragScreenPos, setDragScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const raycastRef = useRef<RaycastHandle>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -72,31 +79,35 @@ function App() {
   };
   
   const handleDragEnd = (itemId: string, x: number, y: number) => {
-    if ((window as any).__porsiRaycast) {
-      const hitPos = (window as any).__porsiRaycast({ x, y });
+    const hitPos = raycastRef.current?.raycastPlate({ x, y });
+    
+    if (hitPos) {
+      const foodType = itemId as 'nasi' | 'ayam' | 'telur';
       
-      if (hitPos) {
-        const foodType = itemId as 'nasi' | 'ayam' | 'telur';
-        
-        if (foodType === 'nasi') {
-          setPlacedFoods(prev => [...prev, {
-            instanceId: `${foodType}-${Date.now()}`,
-            foodType,
-            position: [hitPos.x, 0, hitPos.z],
-            config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
-          }]);
-        } else {
-          setPlacedFoods(prev => [...prev, {
-            instanceId: `${foodType}-${Date.now()}`,
-            foodType,
-            position: [hitPos.x, 0.15, hitPos.z]
-          }]);
-        }
+      if (foodType === 'nasi') {
+        setPlacedFoods(prev => [...prev, {
+          instanceId: `${foodType}-${Date.now()}`,
+          foodType,
+          position: [hitPos.x, 0, hitPos.z],
+          config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
+        }]);
+      } else {
+        setPlacedFoods(prev => [...prev, {
+          instanceId: `${foodType}-${Date.now()}`,
+          foodType,
+          position: [hitPos.x, 0.15, hitPos.z]
+        }]);
       }
     }
     
     setIsDragging(false);
     setDragScreenPos(null);
+  };
+  
+  const handleFoodUpdate = (instanceId: string, updates: Partial<PlacedFood>) => {
+    setPlacedFoods(prev => prev.map(food => 
+      food.instanceId === instanceId ? { ...food, ...updates } : food
+    ));
   };
 
   return (
@@ -122,12 +133,15 @@ function App() {
         <div className="canvas-section">
           <div className="canvas-container">
             <Plate3D
+              ref={raycastRef}
               plateScale={plateSize.scale}
               theme={theme}
               placedFoods={placedFoods}
+              selectedFoodId={selectedFoodId}
+              onSelectFood={setSelectedFoodId}
+              onFoodUpdate={handleFoodUpdate}
               isDragging={isDragging}
               dragScreenPos={dragScreenPos}
-              onRaycastRequest={() => null}
             />
           </div>
           
