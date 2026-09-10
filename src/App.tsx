@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Plate3D from './components/Plate3D';
 import ControlPanel from './components/ControlPanel';
 import Palette, { PaletteItem } from './components/Palette';
+import ErrorBoundary from './components/ErrorBoundary';
 import { PlateSize, PlacedFood, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
 import { calculateNutritionEstimate } from './utils/calculations';
 import './styles.css';
@@ -23,12 +24,16 @@ function App() {
   const [placedFoods, setPlacedFoods] = useState<PlacedFood[]>([]);
   const [selectedFoodId, setSelectedFoodId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [dragScreenPos, setDragScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const dragScreenPosRef = useRef<{ x: number; y: number } | null>(null);
   const raycastRef = useRef<RaycastHandle>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.title = `Porsi - v${__BUILD_VERSION__}`;
+  }, []);
   
   const totalKcal = placedFoods.reduce((sum, food) => {
     if (food.foodType === 'nasi' && food.config) {
@@ -75,7 +80,7 @@ function App() {
   };
   
   const handleDragMove = (x: number, y: number) => {
-    setDragScreenPos({ x, y });
+    dragScreenPosRef.current = { x, y };
   };
   
   const handleDragEnd = (itemId: string, x: number, y: number) => {
@@ -101,7 +106,7 @@ function App() {
     }
     
     setIsDragging(false);
-    setDragScreenPos(null);
+    dragScreenPosRef.current = null;
   };
   
   const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
@@ -117,9 +122,14 @@ function App() {
           <h1>🍚 Porsi</h1>
           <div className="subtitle">Estimasi Kalori Visual untuk Indonesia</div>
         </div>
-        <button className="theme-toggle" onClick={toggleTheme}>
-          {theme === 'dark' ? '☀️ Terang' : '🌙 Gelap'}
-        </button>
+        <div className="header-actions">
+          <span className="build-version" id="build-id" title={`Built: ${__BUILD_TIME__}`}>
+            v{__BUILD_VERSION__} · {new Date(__BUILD_TIME__).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+          </span>
+          <button className="theme-toggle" onClick={toggleTheme}>
+            {theme === 'dark' ? '☀️ Terang' : '🌙 Gelap'}
+          </button>
+        </div>
       </header>
       
       <main className="main-content">
@@ -131,19 +141,21 @@ function App() {
         />
         
         <div className="canvas-section">
-          <div className="canvas-container">
-            <Plate3D
-              ref={raycastRef}
-              plateScale={plateSize.scale}
-              theme={theme}
-              placedFoods={placedFoods}
-              selectedFoodId={selectedFoodId}
+          <ErrorBoundary>
+            <div className="canvas-container">
+              <Plate3D
+                ref={raycastRef}
+                plateScale={plateSize.scale}
+                theme={theme}
+                placedFoods={placedFoods}
+                selectedFoodId={selectedFoodId}
               onSelectFood={setSelectedFoodId}
               onFoodUpdate={handleFoodUpdate}
               isDragging={isDragging}
-              dragScreenPos={dragScreenPos}
+              dragScreenPosRef={dragScreenPosRef}
             />
-          </div>
+            </div>
+          </ErrorBoundary>
           
           <div className="metrics-dock">
             <div className="metric-primary">
