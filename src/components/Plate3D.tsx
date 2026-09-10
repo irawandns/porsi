@@ -17,7 +17,7 @@ interface Plate3DProps {
   onSelectFood: (id: string | null) => void;
   onFoodUpdate: (instanceId: string, updates: Partial<PlacedFood>) => void;
   isDragging: boolean;
-  dragScreenPos: { x: number; y: number } | null;
+  dragScreenPosRef: React.RefObject<{ x: number; y: number } | null>;
 }
 
 interface SceneProps {
@@ -537,16 +537,17 @@ function SceneContent({
 
 function RaycastHandler({ 
   plateScale, 
-  dragScreenPos
+  dragScreenPosRef
 }: { 
   plateScale: number;
-  dragScreenPos: { x: number; y: number } | null;
+  dragScreenPosRef: React.RefObject<{ x: number; y: number } | null>;
 }) {
   const { camera, gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
   const hitPointRef = useRef<THREE.Vector3 | null>(null);
 
   useFrame(() => {
+    const dragScreenPos = dragScreenPosRef.current;
     if (!dragScreenPos) {
       hitPointRef.current = null;
       return;
@@ -604,10 +605,14 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
   onSelectFood,
   onFoodUpdate,
   isDragging,
-  dragScreenPos
+  dragScreenPosRef
 }, ref) => {
   const bgColor = theme === 'dark' ? '#0a0e1a' : '#f8f9fa';
   const raycastHandleRef = useRef<RaycastHandle | null>(null);
+  const [contextLost, setContextLost] = useState(false);
+  
+  const isMobile = typeof window !== 'undefined' && 
+    (window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 768);
   
   useImperativeHandle(ref, () => ({
     raycastPlate: (screenPos) => raycastHandleRef.current?.raycastPlate(screenPos) || null,
@@ -618,20 +623,57 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
     raycastHandleRef.current = handle;
   }, []);
   
+  if (contextLost) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100%',
+        padding: '2rem',
+        backgroundColor: bgColor,
+        color: theme === 'dark' ? '#e8eaf0' : '#1a1a1a',
+        textAlign: 'center',
+      }}>
+        <h2 style={{ marginBottom: '1rem' }}>⚠️ GPU Context Lost</h2>
+        <p style={{ color: theme === 'dark' ? '#a8afc7' : '#6b7280', marginBottom: '1rem' }}>
+          Koneksi GPU terputus. Silakan reload halaman.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            padding: '0.75rem 1.5rem',
+            backgroundColor: '#4a9eff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '0.5rem',
+            cursor: 'pointer',
+            fontSize: '1rem',
+          }}
+        >
+          🔄 Reload Halaman
+        </button>
+      </div>
+    );
+  }
+  
   return (
     <>
       <Canvas
-        shadows
+        shadows={!isMobile}
         camera={{ position: [4, 4, 6], fov: 50 }}
         style={{ background: bgColor }}
-        dpr={[1, Math.min(2, typeof window !== 'undefined' ? window.devicePixelRatio : 2)]}
+        dpr={isMobile ? 1 : [1, 2]}
         onCreated={({ gl }) => {
           gl.domElement.addEventListener('webglcontextlost', (e) => {
             e.preventDefault();
             console.error('WebGL context lost');
+            setContextLost(true);
           });
           gl.domElement.addEventListener('webglcontextrestored', () => {
             console.log('WebGL context restored');
+            setContextLost(false);
           });
         }}
       >
@@ -639,9 +681,9 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
         <directionalLight
           position={[5, 8, 5]}
           intensity={1}
-          castShadow
-          shadow-mapSize-width={2048}
-          shadow-mapSize-height={2048}
+          castShadow={!isMobile}
+          shadow-mapSize-width={isMobile ? 512 : 2048}
+          shadow-mapSize-height={isMobile ? 512 : 2048}
         />
         <spotLight
           position={[-5, 5, 5]}
@@ -660,12 +702,12 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           isDragging={isDragging}
         />
         
-        <RaycastHandler
+        {isDragging && <RaycastHandler
           plateScale={plateScale}
-          dragScreenPos={dragScreenPos}
-        />
+          dragScreenPosRef={dragScreenPosRef}
+        />}
         
-        <Environment preset="apartment" />
+        {!isMobile && <Environment preset="apartment" frames={1} />}
       </Canvas>
       <div className="canvas-hint">
         {isDragging 
