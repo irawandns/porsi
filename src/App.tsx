@@ -4,7 +4,7 @@ import ControlPanel from './components/ControlPanel';
 import Palette, { PaletteItem } from './components/Palette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { PlateSize, PlacedFood, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
-import { calculateNutritionEstimate, calculateEllipsoidVolume, fitEllipsoidToVolume } from './utils/calculations';
+import { calculateNutritionEstimate, calculateEllipsoidVolume } from './utils/calculations';
 import './styles.css';
 
 export interface RaycastHandle {
@@ -109,10 +109,39 @@ function App() {
     const vol2 = calculateEllipsoidVolume(nasi2.config);
     const totalVolume = vol1 + vol2;
     
-    const x = (nasi1.position[0] * vol1 + nasi2.position[0] * vol2) / totalVolume;
-    const z = (nasi1.position[2] * vol1 + nasi2.position[2] * vol2) / totalVolume;
+    // Determine larger mound (kept mound)
+    const isNasi1Larger = vol1 >= vol2;
+    const keptNasi = isNasi1Larger ? nasi1 : nasi2;
+    const keptVol = isNasi1Larger ? vol1 : vol2;
+    const otherVol = isNasi1Larger ? vol2 : vol1;
     
-    const newConfig = fitEllipsoidToVolume(totalVolume);
+    // Position: prefer kept position, or weighted midpoint if within ~20% size
+    const volumeRatio = Math.min(keptVol, otherVol) / Math.max(keptVol, otherVol);
+    let x: number, z: number;
+    if (volumeRatio >= 0.8) {
+      // Within ~20% - use weighted midpoint
+      x = (nasi1.position[0] * vol1 + nasi2.position[0] * vol2) / totalVolume;
+      z = (nasi1.position[2] * vol1 + nasi2.position[2] * vol2) / totalVolume;
+    } else {
+      // Larger dominates - use kept position
+      x = keptNasi.position[0];
+      z = keptNasi.position[2];
+    }
+    
+    // Preserve aspect of kept mound, scale uniformly for combined volume
+    // V_new = V_kept + V_other = (2/3) * π * (rx * scale) * (h * scale) * (rz * scale)
+    // V_new = (2/3) * π * rx * h * rz * scale³
+    // scale³ = V_new / V_kept
+    // scale = (V_new / V_kept)^(1/3)
+    const scaleFactor = Math.pow(totalVolume / keptVol, 1 / 3);
+    
+    // keptNasi.config guaranteed non-null by early return
+    const keptConfig = keptNasi.config!;
+    const newConfig = {
+      radiusX: keptConfig.radiusX * scaleFactor,
+      radiusZ: keptConfig.radiusZ * scaleFactor,
+      height: keptConfig.height * scaleFactor
+    };
     
     return {
       instanceId: `nasi-${Date.now()}`,
