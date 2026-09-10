@@ -257,9 +257,31 @@ function SceneContent({
   }, [raycastPlate, raycastFood, onRaycastReady]);
 
   useEffect(() => {
-    if (!manipulating) return;
+    if (!manipulating) {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      return;
+    }
+
+    const flushUpdates = () => {
+      if (pendingUpdatesRef.current.size > 0) {
+        pendingUpdatesRef.current.forEach((updates, instanceId) => {
+          onFoodUpdate(instanceId, updates);
+        });
+        pendingUpdatesRef.current.clear();
+      }
+      rafIdRef.current = requestAnimationFrame(flushUpdates);
+    };
+    
+    rafIdRef.current = requestAnimationFrame(flushUpdates);
 
     const handleGlobalPointerMove = (e: PointerEvent) => {
+      if (!e.isPrimary && primaryPointerIdRef.current !== null && e.pointerId !== primaryPointerIdRef.current) {
+        return;
+      }
+      
       const manipState = manipStateRef.current;
       if (!manipState) return;
 
@@ -351,7 +373,38 @@ function SceneContent({
       }
     };
 
-    const handleGlobalPointerUp = () => {
+    const handleGlobalPointerDown = (e: PointerEvent) => {
+      if (manipulating && !e.isPrimary) {
+        if (rafIdRef.current) {
+          cancelAnimationFrame(rafIdRef.current);
+          rafIdRef.current = null;
+        }
+        
+        pendingUpdatesRef.current.forEach((updates, instanceId) => {
+          onFoodUpdate(instanceId, updates);
+        });
+        pendingUpdatesRef.current.clear();
+        
+        setManipulating(false);
+        manipStateRef.current = null;
+        primaryPointerIdRef.current = null;
+        
+        if (orbitRef.current) {
+          orbitRef.current.enabled = !isDragging;
+        }
+      }
+    };
+
+    const handleGlobalPointerUp = (e: PointerEvent) => {
+      if (primaryPointerIdRef.current !== null && e.pointerId !== primaryPointerIdRef.current) {
+        return;
+      }
+      
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      
       pendingUpdatesRef.current.forEach((updates, instanceId) => {
         onFoodUpdate(instanceId, updates);
       });
@@ -359,17 +412,24 @@ function SceneContent({
       
       setManipulating(false);
       manipStateRef.current = null;
+      primaryPointerIdRef.current = null;
       
       if (orbitRef.current) {
         orbitRef.current.enabled = !isDragging;
       }
     };
 
+    window.addEventListener('pointerdown', handleGlobalPointerDown);
     window.addEventListener('pointermove', handleGlobalPointerMove, { passive: true });
     window.addEventListener('pointerup', handleGlobalPointerUp);
     window.addEventListener('pointercancel', handleGlobalPointerUp);
 
     return () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      window.removeEventListener('pointerdown', handleGlobalPointerDown);
       window.removeEventListener('pointermove', handleGlobalPointerMove);
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
@@ -379,10 +439,15 @@ function SceneContent({
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
     
+    if (!e.nativeEvent.isPrimary) {
+      return;
+    }
+    
     if (orbitRef.current) {
       orbitRef.current.enabled = false;
     }
     
+    primaryPointerIdRef.current = e.nativeEvent.pointerId;
     onSelectFood(food.instanceId);
     manipStateRef.current = {
       food,
