@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
-import { Canvas, useThree, ThreeEvent } from '@react-three/fiber';
+import { Canvas, useThree, useFrame, ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PlacedFood, RiceMoundConfig } from '../types';
@@ -59,9 +59,36 @@ interface PlacedFoodMeshProps {
   isSelected: boolean;
   onPointerDown: (e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => void;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
+  pendingUpdatesRef: React.RefObject<Map<string, Partial<PlacedFood>>>;
 }
 
-function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFoodMeshProps) {
+function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdatesRef }: PlacedFoodMeshProps) {
+  const bodyRef = useRef<THREE.Mesh>(null);
+  const baseRef = useRef<THREE.Mesh>(null);
+  const groupRef = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
+    if (!pendingUpdate) return;
+
+    if (pendingUpdate.position && groupRef.current) {
+      groupRef.current.position.set(
+        pendingUpdate.position[0],
+        0.05,
+        pendingUpdate.position[2]
+      );
+    }
+
+    if (pendingUpdate.config && food.foodType === 'nasi') {
+      const newConfig = { ...food.config, ...pendingUpdate.config };
+      if (bodyRef.current) {
+        bodyRef.current.scale.set(newConfig.radiusX, newConfig.height, newConfig.radiusZ);
+      }
+      if (baseRef.current) {
+        baseRef.current.scale.set(newConfig.radiusX, newConfig.radiusZ, 1);
+      }
+    }
+  });
   if (food.foodType === 'nasi' && food.config) {
     const config = food.config;
     const pos = food.position;
@@ -71,8 +98,9 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
       <group>
         {isSelected && <SelectionRing position={pos} radius={maxRadius * 1.2} />}
         
-        <group position={[pos[0], 0.05, pos[2]]}>
+        <group ref={groupRef} position={[pos[0], 0.05, pos[2]]}>
           <mesh 
+            ref={bodyRef}
             castShadow 
             position={[0, 0, 0]}
             scale={[config.radiusX, config.height, config.radiusZ]}
@@ -89,6 +117,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
           </mesh>
           
           <mesh 
+            ref={baseRef}
             castShadow 
             position={[0, 0, 0]}
             rotation={[-Math.PI / 2, 0, 0]}
@@ -134,6 +163,21 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
     );
   }
   
+  const laukRef = useRef<THREE.Mesh>(null);
+
+  useFrame(() => {
+    const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
+    if (pendingUpdate?.position && laukRef.current) {
+      laukRef.current.position.set(
+        pendingUpdate.position[0],
+        pendingUpdate.position[1],
+        pendingUpdate.position[2]
+      );
+    }
+  });
+
+  const pos = food.position;
+
   const geometry = food.foodType === 'ayam' 
     ? <boxGeometry args={[0.6, 0.3, 0.5]} />
     : <sphereGeometry args={[0.3, 16, 16]} />;
@@ -143,10 +187,11 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick }: PlacedFood
   
   return (
     <group>
-      {isSelected && <SelectionRing position={food.position} radius={0.5} />}
+      {isSelected && <SelectionRing position={pos} radius={0.5} />}
       <mesh 
+        ref={laukRef}
         castShadow 
-        position={food.position}
+        position={pos}
         name={`lauk-${food.instanceId}`}
         onPointerDown={(e) => onPointerDown(e, food, 'body')}
         onClick={(e) => onClick(e)}
@@ -183,6 +228,12 @@ function SceneContent({
   const [manipulating, setManipulating] = useState(false);
   const manipStateRef = useRef<ManipState | null>(null);
   const pendingUpdatesRef = useRef<Map<string, Partial<PlacedFood>>>(new Map());
+  const primaryPointerIdRef = useRef<number | null>(null);
+  const onFoodUpdateRef = useRef(onFoodUpdate);
+
+  useEffect(() => {
+    onFoodUpdateRef.current = onFoodUpdate;
+  }, [onFoodUpdate]);
 
   const screenToNDC = useCallback((screenPos: { x: number; y: number }) => {
     const canvas = gl.domElement;
@@ -260,6 +311,10 @@ function SceneContent({
     if (!manipulating) return;
 
     const handleGlobalPointerMove = (e: PointerEvent) => {
+      if (!e.isPrimary && primaryPointerIdRef.current !== null && e.pointerId !== primaryPointerIdRef.current) {
+        return;
+      }
+      
       const manipState = manipStateRef.current;
       if (!manipState) return;
 
@@ -351,38 +406,67 @@ function SceneContent({
       }
     };
 
-    const handleGlobalPointerUp = () => {
+    const handleGlobalPointerDown = (e: PointerEvent) => {
+      if (manipulating && !e.isPrimary) {
+        pendingUpdatesRef.current.forEach((updates, instanceId) => {
+          onFoodUpdateRef.current(instanceId, updates);
+        });
+        pendingUpdatesRef.current.clear();
+        
+        setManipulating(false);
+        manipStateRef.current = null;
+        primaryPointerIdRef.current = null;
+        
+        if (orbitRef.current) {
+          orbitRef.current.enabled = !isDragging;
+        }
+      }
+    };
+
+    const handleGlobalPointerUp = (e: PointerEvent) => {
+      if (primaryPointerIdRef.current !== null && e.pointerId !== primaryPointerIdRef.current) {
+        return;
+      }
+      
       pendingUpdatesRef.current.forEach((updates, instanceId) => {
-        onFoodUpdate(instanceId, updates);
+        onFoodUpdateRef.current(instanceId, updates);
       });
       pendingUpdatesRef.current.clear();
       
       setManipulating(false);
       manipStateRef.current = null;
+      primaryPointerIdRef.current = null;
       
       if (orbitRef.current) {
         orbitRef.current.enabled = !isDragging;
       }
     };
 
+    window.addEventListener('pointerdown', handleGlobalPointerDown);
     window.addEventListener('pointermove', handleGlobalPointerMove, { passive: true });
     window.addEventListener('pointerup', handleGlobalPointerUp);
     window.addEventListener('pointercancel', handleGlobalPointerUp);
 
     return () => {
+      window.removeEventListener('pointerdown', handleGlobalPointerDown);
       window.removeEventListener('pointermove', handleGlobalPointerMove);
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
     };
-  }, [manipulating, plateScale, raycastPlate, onFoodUpdate, isDragging]);
+  }, [manipulating, plateScale, raycastPlate, isDragging]);
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
+    
+    if (!e.nativeEvent.isPrimary) {
+      return;
+    }
     
     if (orbitRef.current) {
       orbitRef.current.enabled = false;
     }
     
+    primaryPointerIdRef.current = e.nativeEvent.pointerId;
     onSelectFood(food.instanceId);
     manipStateRef.current = {
       food,
@@ -444,6 +528,7 @@ function SceneContent({
           isSelected={selectedFoodId === food.instanceId}
           onPointerDown={handlePointerDown}
           onClick={handleClick}
+          pendingUpdatesRef={pendingUpdatesRef}
         />
       ))}
     </>

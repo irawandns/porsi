@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Plate3D from './components/Plate3D';
 import ControlPanel from './components/ControlPanel';
 import Palette, { PaletteItem } from './components/Palette';
@@ -104,11 +104,11 @@ function App() {
     setDragScreenPos(null);
   };
   
-  const handleFoodUpdate = (instanceId: string, updates: Partial<PlacedFood>) => {
+  const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
     setPlacedFoods(prev => prev.map(food => 
       food.instanceId === instanceId ? { ...food, ...updates } : food
     ));
-  };
+  }, []);
 
   return (
     <div className="app">
