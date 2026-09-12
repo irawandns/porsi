@@ -63,6 +63,9 @@ interface Plate3DProps {
   selectedFoodId: string | null;
   onSelectFood: (id: string | null) => void;
   onFoodUpdate: (instanceId: string, updates: Partial<PlacedFood>) => void;
+  onFoodRemove: (instanceId: string) => void;
+  onPlacedDragStateChange?: (dragging: boolean, instanceId: string | null) => void;
+  trashZoneRef?: React.RefObject<HTMLDivElement | null>;
   isDragging: boolean;
   dragScreenPosRef: React.RefObject<{ x: number; y: number } | null>;
 }
@@ -73,6 +76,9 @@ interface SceneProps {
   selectedFoodId: string | null;
   onSelectFood: (id: string | null) => void;
   onFoodUpdate: (instanceId: string, updates: Partial<PlacedFood>) => void;
+  onFoodRemove: (instanceId: string) => void;
+  onPlacedDragStateChange?: (dragging: boolean, instanceId: string | null) => void;
+  trashZoneRef?: React.RefObject<HTMLDivElement | null>;
   onRaycastReady: (handle: RaycastHandle) => void;
   isDragging: boolean;
 }
@@ -274,14 +280,17 @@ interface ManipState {
   moved: boolean;
 }
 
-function SceneContent({ 
-  plateScale, 
-  placedFoods, 
+function SceneContent({
+  plateScale,
+  placedFoods,
   selectedFoodId,
   onSelectFood,
   onFoodUpdate,
+  onFoodRemove,
+  onPlacedDragStateChange,
+  trashZoneRef,
   onRaycastReady,
-  isDragging 
+  isDragging
 }: SceneProps) {
   const { camera, gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
@@ -291,10 +300,54 @@ function SceneContent({
   const pendingUpdatesRef = useRef<Map<string, Partial<PlacedFood>>>(new Map());
   const primaryPointerIdRef = useRef<number | null>(null);
   const onFoodUpdateRef = useRef(onFoodUpdate);
+  const onFoodRemoveRef = useRef(onFoodRemove);
+  const onPlacedDragStateChangeRef = useRef(onPlacedDragStateChange);
 
   useEffect(() => {
     onFoodUpdateRef.current = onFoodUpdate;
   }, [onFoodUpdate]);
+
+  useEffect(() => {
+    onFoodRemoveRef.current = onFoodRemove;
+  }, [onFoodRemove]);
+
+  useEffect(() => {
+    onPlacedDragStateChangeRef.current = onPlacedDragStateChange;
+  }, [onPlacedDragStateChange]);
+
+  // Trash drop target lives in the DOM (plate chrome corner) with
+  // pointer-events:none so it never fights OrbitControls. Hit-testing here
+  // reads its rect directly — no React state per move, keeping mobile drags
+  // free of setState storms. Only body-drags that actually moved can delete,
+  // so taps/selects and nasi sculpt handles (top/foot) never remove.
+  const isOverTrash = useCallback((screenPos: { x: number; y: number }) => {
+    const el = trashZoneRef?.current;
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    return (
+      screenPos.x >= rect.left &&
+      screenPos.x <= rect.right &&
+      screenPos.y >= rect.top &&
+      screenPos.y <= rect.bottom
+    );
+  }, [trashZoneRef]);
+
+  const setTrashHighlight = useCallback((active: boolean) => {
+    trashZoneRef?.current?.classList.toggle('trash-active', active);
+  }, [trashZoneRef]);
+
+  const endPlacedDrag = useCallback(() => {
+    setTrashHighlight(false);
+    setManipulating(false);
+    manipStateRef.current = null;
+    primaryPointerIdRef.current = null;
+    onPlacedDragStateChangeRef.current?.(false, null);
+
+    if (orbitRef.current) {
+      orbitRef.current.enabled = !isDragging;
+    }
+  }, [isDragging, setTrashHighlight]);
 
   const screenToNDC = useCallback((screenPos: { x: number; y: number }) => {
     const canvas = gl.domElement;
@@ -380,6 +433,9 @@ function SceneContent({
       if (!manipState) return;
 
       const currentScreenPos = { x: e.clientX, y: e.clientY };
+      // Direct DOM highlight only (no setState per move); trash accepts
+      // body-drags, never nasi sculpt handles.
+      setTrashHighlight(manipState.part === 'body' && isOverTrash(currentScreenPos));
       const screenDelta = {
         x: currentScreenPos.x - manipState.startScreenPos.x,
         y: currentScreenPos.y - manipState.startScreenPos.y
@@ -473,14 +529,8 @@ function SceneContent({
           onFoodUpdateRef.current(instanceId, updates);
         });
         pendingUpdatesRef.current.clear();
-        
-        setManipulating(false);
-        manipStateRef.current = null;
-        primaryPointerIdRef.current = null;
-        
-        if (orbitRef.current) {
-          orbitRef.current.enabled = !isDragging;
-        }
+
+        endPlacedDrag();
       }
     };
 
@@ -488,19 +538,31 @@ function SceneContent({
       if (primaryPointerIdRef.current !== null && e.pointerId !== primaryPointerIdRef.current) {
         return;
       }
-      
+
+      const manipState = manipStateRef.current;
+      const dropPos = { x: e.clientX, y: e.clientY };
+
+      // Trash drop: only an already-placed food mid body-drag that actually
+      // moved. Taps/selects, sculpt handles, and orbit gestures never delete.
+      if (
+        manipState &&
+        manipState.moved &&
+        manipState.part === 'body' &&
+        isOverTrash(dropPos)
+      ) {
+        pendingUpdatesRef.current.clear();
+        const removedId = manipState.food.instanceId;
+        endPlacedDrag();
+        onFoodRemoveRef.current(removedId);
+        return;
+      }
+
       pendingUpdatesRef.current.forEach((updates, instanceId) => {
         onFoodUpdateRef.current(instanceId, updates);
       });
       pendingUpdatesRef.current.clear();
-      
-      setManipulating(false);
-      manipStateRef.current = null;
-      primaryPointerIdRef.current = null;
-      
-      if (orbitRef.current) {
-        orbitRef.current.enabled = !isDragging;
-      }
+
+      endPlacedDrag();
     };
 
     window.addEventListener('pointerdown', handleGlobalPointerDown);
@@ -514,7 +576,7 @@ function SceneContent({
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
     };
-  }, [manipulating, plateScale, raycastPlate, isDragging]);
+  }, [manipulating, plateScale, raycastPlate, isDragging, isOverTrash, setTrashHighlight, endPlacedDrag]);
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
@@ -529,6 +591,7 @@ function SceneContent({
     
     primaryPointerIdRef.current = e.nativeEvent.pointerId;
     onSelectFood(food.instanceId);
+    onPlacedDragStateChangeRef.current?.(true, food.instanceId);
     manipStateRef.current = {
       food,
       part,
@@ -658,13 +721,16 @@ function RaycastHandler({
   ) : null;
 }
 
-const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({ 
-  plateScale, 
-  theme, 
+const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
+  plateScale,
+  theme,
   placedFoods,
   selectedFoodId,
   onSelectFood,
   onFoodUpdate,
+  onFoodRemove,
+  onPlacedDragStateChange,
+  trashZoneRef,
   isDragging,
   dragScreenPosRef
 }, ref) => {
@@ -761,6 +827,9 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           selectedFoodId={selectedFoodId}
           onSelectFood={onSelectFood}
           onFoodUpdate={onFoodUpdate}
+          onFoodRemove={onFoodRemove}
+          onPlacedDragStateChange={onPlacedDragStateChange}
+          trashZoneRef={trashZoneRef}
           onRaycastReady={handleRaycastReady}
           isDragging={isDragging}
         />
@@ -773,10 +842,10 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
         {!isMobile && <Environment preset="apartment" frames={1} />}
       </Canvas>
       <div className="canvas-hint">
-        {isDragging 
-          ? '🎯 Lepaskan di atas piring untuk menempatkan' 
-          : selectedFoodId 
-          ? '✋ Tarik untuk ubah • Klik di luar untuk batal' 
+        {isDragging
+          ? '🎯 Lepaskan di atas piring untuk menempatkan'
+          : selectedFoodId
+          ? '✋ Tarik untuk ubah • Buang di dock bawah • Klik di luar untuk batal'
           : '🖱️ Klik makanan untuk pilih • Tarik untuk memutar'
         }
       </div>
