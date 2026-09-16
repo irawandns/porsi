@@ -18,13 +18,27 @@ const PALETTE_ITEMS: PaletteItem[] = [
   { id: 'telur', name: 'Egg', nameBahasa: 'Telur', color: '#f4e4c1', icon: '🥚' },
 ];
 
+// Palette chips stay reusable: every drop mints a fresh instanceId so the
+// plate can hold several ayam / several telur. Counter + random suffix guards
+// against Date.now() collisions on rapid successive drops.
+let instanceCounter = 0;
+function nextInstanceId(prefix: string): string {
+  instanceCounter += 1;
+  return `${prefix}-${Date.now()}-${instanceCounter.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [plateSize, setPlateSize] = useState<PlateSize>(PLATE_SIZES[0]);
   const [placedFoods, setPlacedFoods] = useState<PlacedFood[]>([]);
   const [selectedFoodId, setSelectedFoodId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  // Non-null while an already-placed food is being dragged on the plate
+  // (distinct from isDragging, which tracks new palette drags). Set only on
+  // drag start/end — never per-move — so mobile stays setState-storm free.
+  const [placedDraggingId, setPlacedDraggingId] = useState<string | null>(null);
   const dragScreenPosRef = useRef<{ x: number; y: number } | null>(null);
+  const trashZoneRef = useRef<HTMLDivElement | null>(null);
   const raycastRef = useRef<RaycastHandle>(null);
 
   useEffect(() => {
@@ -144,7 +158,7 @@ function App() {
     };
     
     return {
-      instanceId: `nasi-${Date.now()}`,
+      instanceId: nextInstanceId('nasi'),
       foodType: 'nasi',
       position: [x, 0, z],
       config: newConfig
@@ -242,7 +256,7 @@ function App() {
       
       if (foodType === 'nasi') {
         const newNasi: PlacedFood = {
-          instanceId: `nasi-${Date.now()}`,
+          instanceId: nextInstanceId('nasi'),
           foodType,
           position: [hitPos.x, 0, hitPos.z],
           config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
@@ -264,7 +278,7 @@ function App() {
         }, 10);
       } else {
         const newLauk: PlacedFood = {
-          instanceId: `${foodType}-${Date.now()}`,
+          instanceId: nextInstanceId(foodType),
           foodType,
           position: [hitPos.x, 0.15, hitPos.z]
         };
@@ -316,6 +330,38 @@ function App() {
     });
   }, [resolveCollisions, plateSize.scale]);
 
+  const handleRemoveFood = useCallback((instanceId: string) => {
+    setPlacedFoods(prev => prev.filter(food => food.instanceId !== instanceId));
+    setSelectedFoodId(prev => (prev === instanceId ? null : prev));
+    setPlacedDraggingId(prev => (prev === instanceId ? null : prev));
+  }, []);
+
+  // Called by Plate3D only on placed-drag start/end (never per-move).
+  const handlePlacedDragStateChange = useCallback((dragging: boolean, instanceId: string | null) => {
+    setPlacedDraggingId(dragging ? instanceId : null);
+  }, []);
+
+  const selectedFood = selectedFoodId
+    ? placedFoods.find(food => food.instanceId === selectedFoodId) ?? null
+    : null;
+
+  // Per-instance dock line: nasi reports grams + kcal from the shared volume
+  // math; lauk are fixed-kcal pieces with no invented grams (em dash).
+  const selectedLine = (() => {
+    if (!selectedFood) return null;
+    if (selectedFood.foodType === 'nasi' && selectedFood.config) {
+      const est = calculateNutritionEstimate(selectedFood.config);
+      return { name: 'Nasi', detail: `${est.grams} g · ${est.kcal} kkal` };
+    }
+    if (selectedFood.foodType === 'ayam') {
+      return { name: 'Ayam', detail: `— · ${AYAM_KCAL} kkal` };
+    }
+    if (selectedFood.foodType === 'telur') {
+      return { name: 'Telur', detail: `— · ${TELUR_KCAL} kkal` };
+    }
+    return null;
+  })();
+
   return (
     <div className="app">
       <header className="header">
@@ -352,25 +398,53 @@ function App() {
                 selectedFoodId={selectedFoodId}
               onSelectFood={setSelectedFoodId}
               onFoodUpdate={handleFoodUpdate}
+              onFoodRemove={handleRemoveFood}
+              onPlacedDragStateChange={handlePlacedDragStateChange}
+              trashZoneRef={trashZoneRef}
               isDragging={isDragging}
               dragScreenPosRef={dragScreenPosRef}
             />
+              <div
+                id="trash-zone"
+                ref={trashZoneRef}
+                className={`trash-zone ${placedDraggingId ? 'visible' : ''}`}
+                aria-hidden="true"
+              >
+                <span className="trash-zone-icon">🗑️</span>
+                <span className="trash-zone-label">Seret ke sini untuk buang</span>
+              </div>
             </div>
           </ErrorBoundary>
-          
+
           <div className="metrics-dock">
-            <div className="metric-primary">
-              <span className="metric-value">{displayEstimate.grams}</span>
-              <span className="metric-unit">g</span>
+            <div className="metrics-totals">
+              <div className="metric-primary">
+                <span className="metric-value">{displayEstimate.grams}</span>
+                <span className="metric-unit">g</span>
+              </div>
+              <div className="metric-secondary">
+                <span className="metric-label">kalori:</span>
+                <span className="metric-value">{displayEstimate.kcal}</span>
+              </div>
+              <div className="metric-range">
+                <span className="range-band">{displayEstimate.gramsLow}–{displayEstimate.gramsHigh}g</span>
+                <span className="range-label">(±20%)</span>
+              </div>
             </div>
-            <div className="metric-secondary">
-              <span className="metric-label">kalori:</span>
-              <span className="metric-value">{displayEstimate.kcal}</span>
-            </div>
-            <div className="metric-range">
-              <span className="range-band">{displayEstimate.gramsLow}–{displayEstimate.gramsHigh}g</span>
-              <span className="range-label">(±20%)</span>
-            </div>
+            {selectedFood && selectedLine && (
+              <div className="selection-line">
+                <span className="selection-text">
+                  Dipilih: <strong>{selectedLine.name}</strong> · {selectedLine.detail}
+                </span>
+                <button
+                  type="button"
+                  className="buang-btn"
+                  onClick={() => handleRemoveFood(selectedFood.instanceId)}
+                >
+                  🗑️ Buang
+                </button>
+              </div>
+            )}
           </div>
         </div>
         
