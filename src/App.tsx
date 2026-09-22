@@ -60,6 +60,13 @@ function App() {
   const [placedDraggingId, setPlacedDraggingId] = useState<string | null>(null);
   const trashZoneRef = useRef<HTMLDivElement | null>(null);
   const raycastRef = useRef<RaycastHandle>(null);
+  // Fresh-array mirror so rapid double-size taps sequence losslessly.
+  // resolveCollisions mints instanceIds, so it can't run inside a setState
+  // updater (updaters must stay pure under StrictMode double-invoke).
+  const placedFoodsRef = useRef(placedFoods);
+  useEffect(() => {
+    placedFoodsRef.current = placedFoods;
+  }, [placedFoods]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -271,6 +278,7 @@ function App() {
     const foodType = pendingType;
     if (!foodType) return;
 
+    const basis = placedFoodsRef.current;
     const plateRadius = plateSize.scale * 2;
     const now = Date.now();
     let newFood: PlacedFood;
@@ -293,11 +301,11 @@ function App() {
       const y = 0.15;
       let x = 0;
       let z = 0;
-      if (placedFoods.length > 0) {
+      if (basis.length > 0) {
         // Ring slot around the mound: golden-angle spread over existing
         // lauk count so repeated taps orbit instead of stacking.
-        const laukCount = placedFoods.filter(f => f.foodType !== 'nasi').length;
-        const anchor = placedFoods.find(f => f.foodType === 'nasi');
+        const laukCount = basis.filter(f => f.foodType !== 'nasi').length;
+        const anchor = basis.find(f => f.foodType === 'nasi');
         const cx = anchor ? anchor.position[0] : 0;
         const cz = anchor ? anchor.position[2] : 0;
         const anchorR = anchor?.config
@@ -317,13 +325,21 @@ function App() {
       };
     }
 
-    const { food: resolvedFood, mergedWith } = resolveCollisions(newFood, placedFoods, plateRadius);
-    const filtered = placedFoods.filter(f => !mergedWith.includes(f.instanceId));
-    setPlacedFoods([...filtered, resolvedFood]);
+    const { food: resolvedFood, mergedWith } = resolveCollisions(newFood, basis, plateRadius);
+    // Pour-triggered nasi↔nasi merge: carry the incoming pour's timestamp
+    // onto the fused survivor so it still drops instead of popping in.
+    // (Drag-triggered merges in handleFoodUpdate keep no spawnedAt → instant.)
+    if (mergedWith.length > 0 && newFood.spawnedAt !== undefined) {
+      resolvedFood.spawnedAt = newFood.spawnedAt;
+    }
+    const filtered = basis.filter(f => !mergedWith.includes(f.instanceId));
+    const next = [...filtered, resolvedFood];
+    placedFoodsRef.current = next;
+    setPlacedFoods(next);
     // Auto-select the poured food so sculpt + Buang are one tap away.
     setSelectedFoodId(resolvedFood.instanceId);
     setPendingType(null);
-  }, [pendingType, placedFoods, plateSize.scale, resolveCollisions]);
+  }, [pendingType, plateSize.scale, resolveCollisions]);
 
   const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
     setPlacedFoods(prev => {

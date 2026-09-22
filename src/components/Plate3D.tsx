@@ -305,9 +305,12 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
 
   const pos = food.position;
 
+  // Unit geometry; the size-sheet factor lives ONLY on the mesh scale
+  // (initial scale={s} + pour settle ending at setScalar(s)) so the visual
+  // footprint always matches getFoodRadius's single sizeScale.
   const geometry = food.foodType === 'ayam'
-    ? <boxGeometry args={[0.6 * s, 0.3 * s, 0.5 * s]} />
-    : <sphereGeometry args={[0.3 * s, 16, 16]} />;
+    ? <boxGeometry args={[0.6, 0.3, 0.5]} />
+    : <sphereGeometry args={[0.3, 16, 16]} />;
 
   const color = food.foodType === 'ayam' ? '#d4a574' : '#f4e4c1';
   const selectedColor = food.foodType === 'ayam' ? '#e4b584' : '#ffe4d1';
