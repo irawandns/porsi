@@ -3,7 +3,7 @@ import Plate3D from './components/Plate3D';
 import ControlPanel from './components/ControlPanel';
 import Palette, { PaletteItem } from './components/Palette';
 import ErrorBoundary from './components/ErrorBoundary';
-import { PlateSize, PlacedFood, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
+import { PlateSize, PlacedFood, FoodType, PortionSize, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
 import { calculateNutritionEstimate, calculateEllipsoidVolume } from './utils/calculations';
 import './styles.css';
 
@@ -18,13 +18,33 @@ const PALETTE_ITEMS: PaletteItem[] = [
   { id: 'telur', name: 'Egg', nameBahasa: 'Telur', color: '#f4e4c1', icon: '🥚' },
 ];
 
-// Palette chips stay reusable: every drop mints a fresh instanceId so the
+// Palette chips stay reusable: every spawn mints a fresh instanceId so the
 // plate can hold several ayam / several telur. Counter + random suffix guards
-// against Date.now() collisions on rapid successive drops.
+// against Date.now() collisions on rapid successive taps.
 let instanceCounter = 0;
 function nextInstanceId(prefix: string): string {
   instanceCounter += 1;
   return `${prefix}-${Date.now()}-${instanceCounter.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// ---- Tap → size → pour tuning -------------------------------------------
+// Nasi Sedang is the long-standing default mound {1.2, 1.0, 0.5} ≈ 200 g,
+// inside the 150–250 g target. Kecil/Besar scale VOLUME (uniform linear
+// cbrt factor) so the hints stay honest: ~140 / ~200 / ~270 g.
+const NASI_BASE = { radiusX: 1.2, radiusZ: 1.0, height: 0.5 };
+const NASI_VOL_MULT: Record<PortionSize, number> = { kecil: 0.7, sedang: 1.0, besar: 1.35 };
+// Lauk kcal never changes with size (no invented grams); this only scales
+// the mesh + collision radius.
+const LAUK_SCALE: Record<PortionSize, number> = { kecil: 0.8, sedang: 1.0, besar: 1.25 };
+
+const SIZE_ORDER: PortionSize[] = ['kecil', 'sedang', 'besar'];
+const SIZE_LABEL: Record<PortionSize, string> = { kecil: 'Kecil', sedang: 'Sedang', besar: 'Besar' };
+
+function sizeHint(foodType: FoodType, size: PortionSize): string {
+  if (foodType === 'nasi') {
+    return size === 'kecil' ? '~140g' : size === 'sedang' ? '~200g' : '~270g';
+  }
+  return size === 'kecil' ? 'kecil' : size === 'sedang' ? 'standar' : 'besar';
 }
 
 function App() {
@@ -32,14 +52,21 @@ function App() {
   const [plateSize, setPlateSize] = useState<PlateSize>(PLATE_SIZES[0]);
   const [placedFoods, setPlacedFoods] = useState<PlacedFood[]>([]);
   const [selectedFoodId, setSelectedFoodId] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  // Non-null while an already-placed food is being dragged on the plate
-  // (distinct from isDragging, which tracks new palette drags). Set only on
-  // drag start/end — never per-move — so mobile stays setState-storm free.
+  // Chip tapped, waiting for a size choice. Null = size sheet closed.
+  const [pendingType, setPendingType] = useState<FoodType | null>(null);
+  // Non-null while an already-placed food is being dragged on the plate.
+  // Set only on drag start/end — never per-move — so mobile stays
+  // setState-storm free.
   const [placedDraggingId, setPlacedDraggingId] = useState<string | null>(null);
-  const dragScreenPosRef = useRef<{ x: number; y: number } | null>(null);
   const trashZoneRef = useRef<HTMLDivElement | null>(null);
   const raycastRef = useRef<RaycastHandle>(null);
+  // Fresh-array mirror so rapid double-size taps sequence losslessly.
+  // resolveCollisions mints instanceIds, so it can't run inside a setState
+  // updater (updaters must stay pure under StrictMode double-invoke).
+  const placedFoodsRef = useRef(placedFoods);
+  useEffect(() => {
+    placedFoodsRef.current = placedFoods;
+  }, [placedFoods]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -48,7 +75,7 @@ function App() {
   useEffect(() => {
     document.title = `Porsi - v${__BUILD_VERSION__}`;
   }, []);
-  
+
   const totalKcal = placedFoods.reduce((sum, food) => {
     if (food.foodType === 'nasi' && food.config) {
       const nasiEstimate = calculateNutritionEstimate(food.config);
@@ -60,7 +87,7 @@ function App() {
     }
     return sum;
   }, 0);
-  
+
   const totalGrams = placedFoods.reduce((sum, food) => {
     if (food.foodType === 'nasi' && food.config) {
       const nasiEstimate = calculateNutritionEstimate(food.config);
@@ -68,7 +95,7 @@ function App() {
     }
     return sum;
   }, 0);
-  
+
   const displayEstimate = placedFoods.length > 0 ? {
     grams: Math.round(totalGrams),
     kcal: Math.round(totalKcal),
@@ -88,23 +115,19 @@ function App() {
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
-  
-  const handleDragStart = (_itemId: string) => {
-    setIsDragging(true);
-  };
-  
+
   // Get collision radius for a food item
   const getFoodRadius = useCallback((food: PlacedFood): number => {
     if (food.foodType === 'nasi' && food.config) {
       return Math.max(food.config.radiusX, food.config.radiusZ) * 0.95;
     } else if (food.foodType === 'ayam') {
-      return 0.35;
+      return 0.35 * (food.sizeScale ?? 1);
     } else if (food.foodType === 'telur') {
-      return 0.30;
+      return 0.30 * (food.sizeScale ?? 1);
     }
     return 0.3;
   }, []);
-  
+
   // Check if two foods overlap in XZ plane
   const checkOverlap = useCallback((food1: PlacedFood, food2: PlacedFood): boolean => {
     const r1 = getFoodRadius(food1);
@@ -114,21 +137,21 @@ function App() {
     const dist = Math.sqrt(dx * dx + dz * dz);
     return dist < (r1 + r2 + 0.05);
   }, [getFoodRadius]);
-  
+
   // Merge two nasi mounds into one
   const mergeNasi = useCallback((nasi1: PlacedFood, nasi2: PlacedFood): PlacedFood => {
     if (!nasi1.config || !nasi2.config) return nasi1;
-    
+
     const vol1 = calculateEllipsoidVolume(nasi1.config);
     const vol2 = calculateEllipsoidVolume(nasi2.config);
     const totalVolume = vol1 + vol2;
-    
+
     // Determine larger mound (kept mound)
     const isNasi1Larger = vol1 >= vol2;
     const keptNasi = isNasi1Larger ? nasi1 : nasi2;
     const keptVol = isNasi1Larger ? vol1 : vol2;
     const otherVol = isNasi1Larger ? vol2 : vol1;
-    
+
     // Position: prefer kept position, or weighted midpoint if within ~20% size
     const volumeRatio = Math.min(keptVol, otherVol) / Math.max(keptVol, otherVol);
     let x: number, z: number;
@@ -141,14 +164,14 @@ function App() {
       x = keptNasi.position[0];
       z = keptNasi.position[2];
     }
-    
+
     // Preserve aspect of kept mound, scale uniformly for combined volume
     // V_new = V_kept + V_other = (2/3) * π * (rx * scale) * (h * scale) * (rz * scale)
     // V_new = (2/3) * π * rx * h * rz * scale³
     // scale³ = V_new / V_kept
     // scale = (V_new / V_kept)^(1/3)
     const scaleFactor = Math.pow(totalVolume / keptVol, 1 / 3);
-    
+
     // keptNasi.config guaranteed non-null by early return
     const keptConfig = keptNasi.config!;
     const newConfig = {
@@ -156,7 +179,7 @@ function App() {
       radiusZ: keptConfig.radiusZ * scaleFactor,
       height: keptConfig.height * scaleFactor
     };
-    
+
     return {
       instanceId: nextInstanceId('nasi'),
       foodType: 'nasi',
@@ -173,7 +196,7 @@ function App() {
   ): { food: PlacedFood; mergedWith: string[] } => {
     let resultFood = { ...newFood };
     const mergedIds: string[] = [];
-    
+
     // Check for nasi-nasi merges
     if (resultFood.foodType === 'nasi') {
       for (const other of existingFoods) {
@@ -185,32 +208,32 @@ function App() {
         }
       }
     }
-    
+
     // Soft no-overlap for non-nasi-nasi pairs (nasi↔lauk, lauk↔lauk)
     const movingRadius = getFoodRadius(resultFood);
     let x = resultFood.position[0];
     let z = resultFood.position[2];
     const epsilon = 0.05;
-    
+
     const maxPasses = 5;
     for (let pass = 0; pass < maxPasses; pass++) {
       let anyOverlap = false;
-      
+
       for (const other of existingFoods) {
         if (mergedIds.includes(other.instanceId)) continue;
-        
+
         // Skip if both are nasi (already merged above)
         if (resultFood.foodType === 'nasi' && other.foodType === 'nasi') continue;
-        
+
         const otherRadius = getFoodRadius(other);
         const dx = x - other.position[0];
         const dz = z - other.position[2];
         let dist = Math.sqrt(dx * dx + dz * dz);
         const minDist = movingRadius + otherRadius + epsilon;
-        
+
         if (dist < minDist) {
           anyOverlap = true;
-          
+
           if (dist < 0.001) {
             const angle = Math.random() * Math.PI * 2;
             const jitterDist = minDist * 0.5;
@@ -218,7 +241,7 @@ function App() {
             z += Math.sin(angle) * jitterDist;
             continue;
           }
-          
+
           const pushDist = minDist - dist;
           const nx = dx / dist;
           const nz = dz / dist;
@@ -226,10 +249,10 @@ function App() {
           z += nz * pushDist;
         }
       }
-      
+
       if (!anyOverlap) break;
     }
-    
+
     // Clamp to plate
     const plateDist = Math.sqrt(x * x + z * z);
     const maxDist = plateRadius * 0.9;
@@ -238,77 +261,100 @@ function App() {
       x *= scale;
       z *= scale;
     }
-    
+
     resultFood.position = [x, resultFood.position[1], z];
-    
+
     return { food: resultFood, mergedWith: mergedIds };
   }, [getFoodRadius, checkOverlap, mergeNasi]);
 
-  const handleDragMove = (x: number, y: number) => {
-    dragScreenPosRef.current = { x, y };
-  };
-  
-  const handleDragEnd = (itemId: string, x: number, y: number) => {
-    const hitPos = raycastRef.current?.raycastPlate({ x, y });
-    
-    if (hitPos) {
-      const foodType = itemId as 'nasi' | 'ayam' | 'telur';
-      
-      if (foodType === 'nasi') {
-        const newNasi: PlacedFood = {
-          instanceId: nextInstanceId('nasi'),
-          foodType,
-          position: [hitPos.x, 0, hitPos.z],
-          config: { radiusX: 1.2, radiusZ: 1.0, height: 0.5 }
-        };
-        
-        setPlacedFoods(prev => {
-          const { food: resolvedFood, mergedWith } = resolveCollisions(newNasi, prev, plateSize.scale * 2);
-          const filtered = prev.filter(f => !mergedWith.includes(f.instanceId));
-          return [...filtered, resolvedFood];
-        });
-        
-        // Select the merged/placed nasi after a short delay to get the correct instanceId
-        setTimeout(() => {
-          setPlacedFoods(current => {
-            const lastNasi = [...current].reverse().find(f => f.foodType === 'nasi');
-            if (lastNasi) setSelectedFoodId(lastNasi.instanceId);
-            return current;
-          });
-        }, 10);
-      } else {
-        const newLauk: PlacedFood = {
-          instanceId: nextInstanceId(foodType),
-          foodType,
-          position: [hitPos.x, 0.15, hitPos.z]
-        };
-        
-        setPlacedFoods(prev => {
-          const { food: resolvedFood, mergedWith } = resolveCollisions(newLauk, prev, plateSize.scale * 2);
-          const filtered = prev.filter(f => !mergedWith.includes(f.instanceId));
-          return [...filtered, resolvedFood];
-        });
+  const handleChipTap = useCallback((itemId: string) => {
+    const foodType = itemId as FoodType;
+    // Tapping the open chip again dismisses the sheet without placing.
+    setPendingType(prev => (prev === foodType ? null : foodType));
+  }, []);
+
+  // Tapping a size IMMEDIATELY spawns that food with a pour (no Confirm).
+  const handleSizePick = useCallback((size: PortionSize) => {
+    const foodType = pendingType;
+    if (!foodType) return;
+
+    const basis = placedFoodsRef.current;
+    const plateRadius = plateSize.scale * 2;
+    const now = Date.now();
+    let newFood: PlacedFood;
+
+    if (foodType === 'nasi') {
+      const s = Math.cbrt(NASI_VOL_MULT[size]);
+      newFood = {
+        instanceId: nextInstanceId('nasi'),
+        foodType,
+        // Nasi always lands plate center; merge/soft-push resolve the rest.
+        position: [0, 0, 0],
+        config: {
+          radiusX: NASI_BASE.radiusX * s,
+          radiusZ: NASI_BASE.radiusZ * s,
+          height: NASI_BASE.height * s,
+        },
+        spawnedAt: now,
+      };
+    } else {
+      const y = 0.15;
+      let x = 0;
+      let z = 0;
+      if (basis.length > 0) {
+        // Ring slot around the mound: golden-angle spread over existing
+        // lauk count so repeated taps orbit instead of stacking.
+        const laukCount = basis.filter(f => f.foodType !== 'nasi').length;
+        const anchor = basis.find(f => f.foodType === 'nasi');
+        const cx = anchor ? anchor.position[0] : 0;
+        const cz = anchor ? anchor.position[2] : 0;
+        const anchorR = anchor?.config
+          ? Math.max(anchor.config.radiusX, anchor.config.radiusZ)
+          : 0.6;
+        const ringR = Math.min(anchorR + 0.7, plateRadius * 0.9 - 0.35);
+        const angle = laukCount * 2.39996 + Math.random() * 0.3;
+        x = cx + Math.cos(angle) * ringR;
+        z = cz + Math.sin(angle) * ringR;
       }
+      newFood = {
+        instanceId: nextInstanceId(foodType),
+        foodType,
+        position: [x, y, z],
+        sizeScale: LAUK_SCALE[size],
+        spawnedAt: now,
+      };
     }
-    
-    setIsDragging(false);
-    dragScreenPosRef.current = null;
-  };
-  
+
+    const { food: resolvedFood, mergedWith } = resolveCollisions(newFood, basis, plateRadius);
+    // Pour-triggered nasi↔nasi merge: carry the incoming pour's timestamp
+    // onto the fused survivor so it still drops instead of popping in.
+    // (Drag-triggered merges in handleFoodUpdate keep no spawnedAt → instant.)
+    if (mergedWith.length > 0 && newFood.spawnedAt !== undefined) {
+      resolvedFood.spawnedAt = newFood.spawnedAt;
+    }
+    const filtered = basis.filter(f => !mergedWith.includes(f.instanceId));
+    const next = [...filtered, resolvedFood];
+    placedFoodsRef.current = next;
+    setPlacedFoods(next);
+    // Auto-select the poured food so sculpt + Buang are one tap away.
+    setSelectedFoodId(resolvedFood.instanceId);
+    setPendingType(null);
+  }, [pendingType, plateSize.scale, resolveCollisions]);
+
   const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
     setPlacedFoods(prev => {
       // Apply the update first
-      const updatedFoods = prev.map(food => 
+      const updatedFoods = prev.map(food =>
         food.instanceId === instanceId ? { ...food, ...updates } : food
       );
-      
+
       // Only check collisions if position changed (body drag)
       if (updates.position) {
         const movingFood = updatedFoods.find(f => f.instanceId === instanceId);
         if (movingFood) {
           const others = updatedFoods.filter(f => f.instanceId !== instanceId);
           const { food: resolvedFood, mergedWith } = resolveCollisions(movingFood, others, plateSize.scale * 2);
-          
+
           if (mergedWith.length > 0) {
             // Merge occurred - remove merged foods and add result
             const filtered = updatedFoods.filter(f => f.instanceId !== instanceId && !mergedWith.includes(f.instanceId));
@@ -324,7 +370,7 @@ function App() {
           }
         }
       }
-      
+
       // Config-only or other updates: apply without collision check
       return updatedFoods;
     });
@@ -378,15 +424,14 @@ function App() {
           </button>
         </div>
       </header>
-      
+
       <main className="main-content">
         <Palette
           items={PALETTE_ITEMS}
-          onDragStart={handleDragStart}
-          onDragMove={handleDragMove}
-          onDragEnd={handleDragEnd}
+          selectedId={pendingType}
+          onSelect={handleChipTap}
         />
-        
+
         <div className="canvas-section">
           <ErrorBoundary>
             <div className="canvas-container">
@@ -396,14 +441,12 @@ function App() {
                 theme={theme}
                 placedFoods={placedFoods}
                 selectedFoodId={selectedFoodId}
-              onSelectFood={setSelectedFoodId}
-              onFoodUpdate={handleFoodUpdate}
-              onFoodRemove={handleRemoveFood}
-              onPlacedDragStateChange={handlePlacedDragStateChange}
-              trashZoneRef={trashZoneRef}
-              isDragging={isDragging}
-              dragScreenPosRef={dragScreenPosRef}
-            />
+                onSelectFood={setSelectedFoodId}
+                onFoodUpdate={handleFoodUpdate}
+                onFoodRemove={handleRemoveFood}
+                onPlacedDragStateChange={handlePlacedDragStateChange}
+                trashZoneRef={trashZoneRef}
+              />
               <div
                 id="trash-zone"
                 ref={trashZoneRef}
@@ -447,12 +490,48 @@ function App() {
             )}
           </div>
         </div>
-        
+
         <ControlPanel
           plateSize={plateSize}
           onPlateSizeChange={setPlateSize}
         />
       </main>
+
+      {/* Minimal size sheet (PoC wiring only — no visual redesign).
+          Docks above the tray; tapping a size pours immediately.
+          Backdrop / Batal / re-tapping the chip dismisses without placing. */}
+      {pendingType && (
+        <div className="size-sheet-backdrop" onClick={() => setPendingType(null)}>
+          <div
+            className="size-sheet"
+            role="dialog"
+            aria-label={`Pilih porsi ${pendingType}`}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="size-sheet-title">Pilih porsi</div>
+            <div className="size-sheet-row">
+              {SIZE_ORDER.map(size => (
+                <button
+                  key={size}
+                  type="button"
+                  className="size-btn"
+                  onClick={() => handleSizePick(size)}
+                >
+                  <span className="size-btn-label">{SIZE_LABEL[size]}</span>
+                  <span className="size-btn-hint">{sizeHint(pendingType, size)}</span>
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="size-cancel"
+              onClick={() => setPendingType(null)}
+            >
+              Batal
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -51,6 +51,24 @@ const nasiMaterialSelected = new THREE.MeshStandardMaterial({
 });
 nasiMaterialSelected.onBeforeCompile = addGrainShader;
 
+// ---- Pour engine ----------------------------------------------------------
+// One-shot spawn animation, driven entirely inside useFrame via refs (no
+// React state per frame): Y drop + scale settle + opacity-in over ~400 ms
+// with an ease-out cubic. food.spawnedAt is stamped at spawn time; foods
+// without it (nasi-nasi merge results) appear instantly.
+const POUR_MS = 400;
+const POUR_DROP_H = 2.4;
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function pourProgress(spawnedAt: number | undefined, now: number): number {
+  if (spawnedAt === undefined) return 1;
+  const t = (now - spawnedAt) / POUR_MS;
+  return t >= 1 ? 1 : Math.max(0, t);
+}
+
 export interface RaycastHandle {
   raycastPlate: (screenPos: { x: number; y: number }) => { x: number; y: number; z: number } | null;
   raycastFood: (screenPos: { x: number; y: number }) => { food: PlacedFood; part: 'top' | 'body' | 'foot' } | null;
@@ -66,8 +84,6 @@ interface Plate3DProps {
   onFoodRemove: (instanceId: string) => void;
   onPlacedDragStateChange?: (dragging: boolean, instanceId: string | null) => void;
   trashZoneRef?: React.RefObject<HTMLDivElement | null>;
-  isDragging: boolean;
-  dragScreenPosRef: React.RefObject<{ x: number; y: number } | null>;
 }
 
 interface SceneProps {
@@ -80,7 +96,6 @@ interface SceneProps {
   onPlacedDragStateChange?: (dragging: boolean, instanceId: string | null) => void;
   trashZoneRef?: React.RefObject<HTMLDivElement | null>;
   onRaycastReady: (handle: RaycastHandle) => void;
-  isDragging: boolean;
 }
 
 function Plate({ scale }: { scale: number }) {
@@ -120,12 +135,12 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
   const baseRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
   const aoBlobRef = useRef<THREE.Mesh>(null);
+  const pourDoneRef = useRef(false);
 
   useFrame(() => {
     const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
-    if (!pendingUpdate) return;
 
-    if (pendingUpdate.position && groupRef.current) {
+    if (pendingUpdate?.position && groupRef.current) {
       groupRef.current.position.set(
         pendingUpdate.position[0],
         0.05,
@@ -133,7 +148,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
       );
     }
 
-    if (pendingUpdate.config && food.foodType === 'nasi') {
+    if (pendingUpdate?.config && food.foodType === 'nasi') {
       const newConfig = { ...food.config, ...pendingUpdate.config };
       if (bodyRef.current) {
         bodyRef.current.scale.set(newConfig.radiusX, newConfig.height, newConfig.radiusZ);
@@ -145,6 +160,22 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
       if (aoBlobRef.current) {
         const maxRad = Math.max(newConfig.radiusX, newConfig.radiusZ);
         aoBlobRef.current.scale.set(maxRad * 1.2, maxRad * 1.2, 1);
+      }
+    }
+
+    // Pour: Y drop + scale settle on the group (uniform group scale never
+    // fights the config-driven body/base scales above). Runs only while
+    // t < 1, then snaps to rest exactly once.
+    if (groupRef.current && !pourDoneRef.current) {
+      const t = pourProgress(food.spawnedAt, Date.now());
+      if (t >= 1) {
+        groupRef.current.position.y = 0.05;
+        groupRef.current.scale.setScalar(1);
+        pourDoneRef.current = true;
+      } else {
+        const e = easeOutCubic(t);
+        groupRef.current.position.y = 0.05 + POUR_DROP_H * (1 - e);
+        groupRef.current.scale.setScalar(0.55 + 0.45 * e);
       }
     }
   });
@@ -231,6 +262,10 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
   }
   
   const laukRef = useRef<THREE.Mesh>(null);
+  const laukMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const laukPourDoneRef = useRef(false);
+  // Size-sheet scale: mesh + ring only, kcal untouched.
+  const s = food.sizeScale ?? 1;
 
   useFrame(() => {
     const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
@@ -241,30 +276,59 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
         pendingUpdate.position[2]
       );
     }
+
+    // Pour: Y drop + scale settle + opacity-in. Each lauk mesh owns its
+    // material instance (JSX-created), so per-instance fade is safe.
+    if (laukRef.current && !laukPourDoneRef.current) {
+      const baseY = food.position[1];
+      const t = pourProgress(food.spawnedAt, Date.now());
+      if (t >= 1) {
+        laukRef.current.position.y = baseY;
+        laukRef.current.scale.setScalar(s);
+        if (laukMatRef.current) {
+          laukMatRef.current.opacity = 1;
+          laukMatRef.current.transparent = false;
+        }
+        laukPourDoneRef.current = true;
+      } else {
+        const e = easeOutCubic(t);
+        // Preserve x/z from any concurrent rearrange drag; own the y.
+        laukRef.current.position.y = baseY + POUR_DROP_H * (1 - e);
+        laukRef.current.scale.setScalar(s * (0.55 + 0.45 * e));
+        if (laukMatRef.current) {
+          laukMatRef.current.transparent = true;
+          laukMatRef.current.opacity = 0.15 + 0.85 * e;
+        }
+      }
+    }
   });
 
   const pos = food.position;
 
-  const geometry = food.foodType === 'ayam' 
+  // Unit geometry; the size-sheet factor lives ONLY on the mesh scale
+  // (initial scale={s} + pour settle ending at setScalar(s)) so the visual
+  // footprint always matches getFoodRadius's single sizeScale.
+  const geometry = food.foodType === 'ayam'
     ? <boxGeometry args={[0.6, 0.3, 0.5]} />
     : <sphereGeometry args={[0.3, 16, 16]} />;
-  
+
   const color = food.foodType === 'ayam' ? '#d4a574' : '#f4e4c1';
   const selectedColor = food.foodType === 'ayam' ? '#e4b584' : '#ffe4d1';
-  
+
   return (
     <group>
-      {isSelected && <SelectionRing position={pos} radius={0.5} />}
-      <mesh 
+      {isSelected && <SelectionRing position={pos} radius={0.5 * s} />}
+      <mesh
         ref={laukRef}
-        castShadow 
+        castShadow
         position={pos}
+        scale={s}
         name={`lauk-${food.instanceId}`}
         onPointerDown={(e) => onPointerDown(e, food, 'body')}
         onClick={(e) => onClick(e)}
       >
         {geometry}
-        <meshStandardMaterial color={isSelected ? selectedColor : color} roughness={0.7} metalness={0.1} />
+        <meshStandardMaterial ref={laukMatRef} color={isSelected ? selectedColor : color} roughness={0.7} metalness={0.1} />
       </mesh>
     </group>
   );
@@ -289,8 +353,7 @@ function SceneContent({
   onFoodRemove,
   onPlacedDragStateChange,
   trashZoneRef,
-  onRaycastReady,
-  isDragging
+  onRaycastReady
 }: SceneProps) {
   const { camera, gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
@@ -345,9 +408,9 @@ function SceneContent({
     onPlacedDragStateChangeRef.current?.(false, null);
 
     if (orbitRef.current) {
-      orbitRef.current.enabled = !isDragging;
+      orbitRef.current.enabled = true;
     }
-  }, [isDragging, setTrashHighlight]);
+  }, [setTrashHighlight]);
 
   const screenToNDC = useCallback((screenPos: { x: number; y: number }) => {
     const canvas = gl.domElement;
@@ -576,7 +639,7 @@ function SceneContent({
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
     };
-  }, [manipulating, plateScale, raycastPlate, isDragging, isOverTrash, setTrashHighlight, endPlacedDrag]);
+  }, [manipulating, plateScale, raycastPlate, isOverTrash, setTrashHighlight, endPlacedDrag]);
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
@@ -626,7 +689,7 @@ function SceneContent({
         maxPolarAngle={Math.PI / 2}
         enableDamping
         dampingFactor={0.05}
-        enabled={!manipulating && !isDragging}
+        enabled={!manipulating}
         enableZoom={true}
         touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_ROTATE }}
       />
@@ -659,68 +722,6 @@ function SceneContent({
   );
 }
 
-function RaycastHandler({ 
-  plateScale, 
-  dragScreenPosRef
-}: { 
-  plateScale: number;
-  dragScreenPosRef: React.RefObject<{ x: number; y: number } | null>;
-}) {
-  const { camera, gl, scene } = useThree();
-  const raycaster = useRef(new THREE.Raycaster());
-  const hitPointRef = useRef<THREE.Vector3 | null>(null);
-
-  useFrame(() => {
-    const dragScreenPos = dragScreenPosRef.current;
-    if (!dragScreenPos) {
-      hitPointRef.current = null;
-      return;
-    }
-
-    const canvas = gl.domElement;
-    const rect = canvas.getBoundingClientRect();
-    
-    const mouse = new THREE.Vector2(
-      ((dragScreenPos.x - rect.left) / rect.width) * 2 - 1,
-      -((dragScreenPos.y - rect.top) / rect.height) * 2 + 1
-    );
-
-    raycaster.current.setFromCamera(mouse, camera);
-    
-    const plateMesh = scene.getObjectByName('plate');
-    if (!plateMesh) {
-      hitPointRef.current = null;
-      return;
-    }
-
-    const intersects = raycaster.current.intersectObject(plateMesh, false);
-    
-    if (intersects.length > 0) {
-      const point = intersects[0].point.clone();
-      
-      const plateRadius = 2 * plateScale * 0.9;
-      const distance = Math.sqrt(point.x * point.x + point.z * point.z);
-      
-      if (distance > plateRadius) {
-        const scale = plateRadius / distance;
-        point.x *= scale;
-        point.z *= scale;
-      }
-      
-      hitPointRef.current = point;
-    } else {
-      hitPointRef.current = null;
-    }
-  });
-
-  return hitPointRef.current ? (
-    <mesh position={[hitPointRef.current.x, 0.02, hitPointRef.current.z]}>
-      <ringGeometry args={[0.3, 0.4, 32]} />
-      <meshBasicMaterial color="#4a9eff" transparent opacity={0.6} side={THREE.DoubleSide} />
-    </mesh>
-  ) : null;
-}
-
 const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
   plateScale,
   theme,
@@ -730,9 +731,7 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
   onFoodUpdate,
   onFoodRemove,
   onPlacedDragStateChange,
-  trashZoneRef,
-  isDragging,
-  dragScreenPosRef
+  trashZoneRef
 }, ref) => {
   const bgColor = theme === 'dark' ? '#0a0e1a' : '#f8f9fa';
   const raycastHandleRef = useRef<RaycastHandle | null>(null);
@@ -831,22 +830,16 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           onPlacedDragStateChange={onPlacedDragStateChange}
           trashZoneRef={trashZoneRef}
           onRaycastReady={handleRaycastReady}
-          isDragging={isDragging}
         />
-        
-        {isDragging && <RaycastHandler
-          plateScale={plateScale}
-          dragScreenPosRef={dragScreenPosRef}
-        />}
         
         {!isMobile && <Environment preset="apartment" frames={1} />}
       </Canvas>
       <div className="canvas-hint">
-        {isDragging
-          ? '🎯 Lepaskan di atas piring untuk menempatkan'
+        {placedFoods.length === 0
+          ? '👆 Tap bahan, pilih porsi'
           : selectedFoodId
-          ? '✋ Tarik untuk ubah • Buang di dock bawah • Klik di luar untuk batal'
-          : '🖱️ Klik makanan untuk pilih • Tarik untuk memutar'
+          ? '✋ Tarik untuk ubah • Buang di dock bawah • Tap di luar untuk batal'
+          : '👆 Tap makanan untuk pilih • Tarik untuk memutar'
         }
       </div>
     </>

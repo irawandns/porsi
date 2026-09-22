@@ -1,5 +1,3 @@
-import { useState, useRef, useCallback } from 'react';
-
 export interface PaletteItem {
   id: string;
   name: string;
@@ -10,63 +8,30 @@ export interface PaletteItem {
 
 interface PaletteProps {
   items: PaletteItem[];
-  onDragStart: (itemId: string) => void;
-  onDragMove: (x: number, y: number) => void;
-  onDragEnd: (itemId: string, x: number, y: number) => void;
+  selectedId: string | null;
+  onSelect: (itemId: string) => void;
 }
 
-export default function Palette({ items, onDragStart, onDragMove, onDragEnd }: PaletteProps) {
-  const [dragging, setDragging] = useState<string | null>(null);
-  const dragStartPos = useRef<{ x: number; y: number } | null>(null);
-
-  const handlePointerDown = useCallback((e: React.PointerEvent, itemId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    const target = e.currentTarget as HTMLElement;
-    target.setPointerCapture(e.pointerId);
-    
-    setDragging(itemId);
-    dragStartPos.current = { x: e.clientX, y: e.clientY };
-    onDragStart(itemId);
-  }, [onDragStart]);
-
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!dragging || !dragStartPos.current) return;
-    
-    e.preventDefault();
-    onDragMove(e.clientX, e.clientY);
-  }, [dragging, onDragMove]);
-
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!dragging) return;
-    
-    e.preventDefault();
-    const target = e.currentTarget as HTMLElement;
-    target.releasePointerCapture(e.pointerId);
-    
-    onDragEnd(dragging, e.clientX, e.clientY);
-    setDragging(null);
-    dragStartPos.current = null;
-  }, [dragging, onDragEnd]);
-
+// Tap-to-choose chip tray. There is intentionally no pointer-capture drag
+// path here: tapping a chip opens the size sheet, and the size tap spawns
+// the food via a 3D pour. This keeps the add flow one-handed on phones.
+export default function Palette({ items, selectedId, onSelect }: PaletteProps) {
   return (
     <div className="palette">
       <div className="palette-label">Bahan Makanan</div>
       <div className="palette-chips">
         {items.map(item => (
-          <div
+          <button
             key={item.id}
-            className={`palette-chip ${dragging === item.id ? 'dragging' : ''}`}
+            type="button"
+            className={`palette-chip${selectedId === item.id ? ' selected' : ''}`}
             style={{ backgroundColor: item.color }}
-            onPointerDown={(e) => handlePointerDown(e, item.id)}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerUp}
+            onClick={() => onSelect(item.id)}
+            aria-pressed={selectedId === item.id}
           >
             <span className="palette-chip-icon">{item.icon}</span>
             <span className="palette-chip-label">{item.nameBahasa}</span>
-          </div>
+          </button>
         ))}
       </div>
     </div>

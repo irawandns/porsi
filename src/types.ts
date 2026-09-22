@@ -26,7 +26,14 @@ export interface PlacedFood {
   foodType: 'nasi' | 'ayam' | 'telur';
   position: [number, number, number];
   config?: RiceMoundConfig;
+  /** ms epoch when spawned; drives the one-shot pour/drop animation in Plate3D */
+  spawnedAt?: number;
+  /** lauk visual scale from the size sheet (Kecil 0.8 / Sedang 1 / Besar 1.25); kcal unchanged */
+  sizeScale?: number;
 }
+
+export type FoodType = PlacedFood['foodType'];
+export type PortionSize = 'kecil' | 'sedang' | 'besar';
 
 export interface NutritionEstimate {
   grams: number;
