@@ -689,10 +689,10 @@ body {
   padding: 1rem 0.75rem;
   border-radius: 0.75rem;
   border: 2px solid var(--border);
-  cursor: grab;
+  cursor: pointer;
   transition: all 0.2s;
   user-select: none;
-  touch-action: none;
+  touch-action: manipulation;
 }
 
 .palette-chip:hover {
@@ -701,9 +701,7 @@ body {
   border-color: var(--accent);
 }
 
-.palette-chip:active,
-.palette-chip.dragging {
-  cursor: grabbing;
+.palette-chip:active {
   transform: scale(0.95);
   opacity: 0.7;
 }
@@ -756,4 +754,93 @@ body {
     border-left: none;
     border-top: 1px solid var(--border);
   }
+}
+
+/* ---- Tap → size → pour PoC wiring (minimal, no visual redesign) ---- */
+.palette-chip {
+  font: inherit;
+  color: inherit;
+}
+
+.palette-chip.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.size-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.size-sheet {
+  width: 100%;
+  max-width: 560px;
+  background: var(--secondary-bg);
+  border-top: 2px solid var(--border);
+  border-radius: 1rem 1rem 0 0;
+  padding: 1rem 1.25rem calc(1.25rem + env(safe-area-inset-bottom));
+  box-shadow: 0 -4px 24px var(--shadow);
+}
+
+.size-sheet-title {
+  text-align: center;
+  font-weight: 700;
+  font-size: 1.125rem;
+  margin-bottom: 0.75rem;
+}
+
+.size-sheet-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+
+.size-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1rem 0.5rem;
+  min-height: 64px;
+  font: inherit;
+  background: var(--card-bg);
+  color: var(--text-primary);
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.size-btn:active {
+  border-color: var(--accent);
+  transform: scale(0.97);
+}
+
+.size-btn-label {
+  font-weight: 700;
+}
+
+.size-btn-hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.size-cancel {
+  display: block;
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  min-height: 48px;
+  font: inherit;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  cursor: pointer;
+  touch-action: manipulation;
 }
