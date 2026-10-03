@@ -756,15 +756,58 @@ body {
   }
 }
 
-/* ---- Tap → size → pour PoC wiring (minimal, no visual redesign) ---- */
+/* ---- Drag-and-drop tray (Toca-style lift / float / drop) ---- */
 .palette-chip {
   font: inherit;
   color: inherit;
+  touch-action: none;
 }
 
 .palette-chip.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
+}
+
+.palette-chip.dragging {
+  opacity: 0.45;
+  border-color: var(--accent);
+}
+
+.palette-chip-hint {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tray-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--card-bg);
+  border: 2px solid var(--accent);
+  border-radius: 0.9rem;
+  box-shadow: 0 8px 24px var(--shadow);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.tray-ghost-icon {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.tray-ghost-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .size-sheet-backdrop {
@@ -791,6 +834,13 @@ body {
   text-align: center;
   font-weight: 700;
   font-size: 1.125rem;
+  margin-bottom: 0.25rem;
+}
+
+.size-sheet-sub {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
   margin-bottom: 0.75rem;
 }
 
@@ -812,8 +862,10 @@ body {
   color: var(--text-primary);
   border: 2px solid var(--border);
   border-radius: 0.75rem;
-  cursor: pointer;
-  touch-action: manipulation;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .size-btn:active {
@@ -843,4 +895,29 @@ body {
   border-radius: 0.75rem;
   cursor: pointer;
   touch-action: manipulation;
+}
+
+.resize-row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.resize-btn {
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.5rem 0.75rem;
+  min-height: 44px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.resize-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
 }
