@@ -2,7 +2,9 @@ import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHand
 import { Canvas, useThree, useFrame, ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
-import { PlacedFood, RiceMoundConfig } from '../types';
+import { PlacedFood, RiceMoundConfig, FoodType, PortionSize } from '../types';
+import { nasiConfigFor, laukScaleFor } from '../utils/sizes';
+import type { TrayDrag } from '../App';
 
 // Simple grain shader injection for rice texture
 const addGrainShader = (shader: any) => {
@@ -16,12 +18,12 @@ const addGrainShader = (shader: any) => {
     `#include <worldpos_vertex>
     vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
   );
-  
+
   shader.fragmentShader = shader.fragmentShader.replace(
     '#include <common>',
     `#include <common>
     varying vec3 vWorldPos;
-    
+
     float grain(vec3 pos) {
       // Simple 3D noise approximation for grain
       vec3 p = pos * 120.0;
@@ -51,22 +53,31 @@ const nasiMaterialSelected = new THREE.MeshStandardMaterial({
 });
 nasiMaterialSelected.onBeforeCompile = addGrainShader;
 
-// ---- Pour engine ----------------------------------------------------------
-// One-shot spawn animation, driven entirely inside useFrame via refs (no
-// React state per frame): Y drop + scale settle + opacity-in over ~400 ms
-// with an ease-out cubic. food.spawnedAt is stamped at spawn time; foods
-// without it (nasi-nasi merge results) appear instantly.
-const POUR_MS = 400;
-const POUR_DROP_H = 2.4;
+// ---- Toy drag-and-drop engine --------------------------------------------
+// Toca-style lift / float / drop, driven entirely inside useFrame via refs
+// (no React state per frame). Grab lifts the piece to HOVER_Y with a slight
+// scale-up and a tilt toward the finger; a soft landing shadow stays pinned
+// to the plate at the real XZ while the mesh floats above it. Release on the
+// plate runs one short drop (DROP_MS) plus a single squash (SQUASH_MS) and
+// settles. Release off the plate snaps back — nothing lands in empty space.
+const HOVER_Y = 0.95;
+const NASI_REST_Y = 0.05;
+const LIFT_SCALE = 1.08;
+const DROP_MS = 170;
+const SQUASH_MS = 230;
+const TILT_MAX = 0.24;
+const TILT_K = 0.0035;
 
-function easeOutCubic(t: number): number {
-  return 1 - Math.pow(1 - t, 3);
+function easeInQuad(t: number): number {
+  return t * t;
 }
 
-function pourProgress(spawnedAt: number | undefined, now: number): number {
-  if (spawnedAt === undefined) return 1;
-  const t = (now - spawnedAt) / POUR_MS;
-  return t >= 1 ? 1 : Math.max(0, t);
+function clampTilt(v: number): number {
+  return Math.max(-TILT_MAX, Math.min(TILT_MAX, v));
+}
+
+function damp(cur: number, target: number, k: number): number {
+  return cur + (target - cur) * k;
 }
 
 export interface RaycastHandle {
@@ -84,6 +95,8 @@ interface Plate3DProps {
   onFoodRemove: (instanceId: string) => void;
   onPlacedDragStateChange?: (dragging: boolean, instanceId: string | null) => void;
   trashZoneRef?: React.RefObject<HTMLDivElement | null>;
+  trayDrag: TrayDrag | null;
+  trayScreenRef: React.MutableRefObject<{ x: number; y: number } | null>;
 }
 
 interface SceneProps {
@@ -95,7 +108,55 @@ interface SceneProps {
   onFoodRemove: (instanceId: string) => void;
   onPlacedDragStateChange?: (dragging: boolean, instanceId: string | null) => void;
   trashZoneRef?: React.RefObject<HTMLDivElement | null>;
+  trayDrag: TrayDrag | null;
+  trayScreenRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onRaycastReady: (handle: RaycastHandle) => void;
+}
+
+/** Per-piece visual drag/settle state. Lives in a Map so useFrame can mutate
+ *  it without touching React state. Created on grab or on spawn, cleared
+ *  after the settle finishes. */
+interface DragVis {
+  isDragging: boolean;
+  targetX: number;
+  targetZ: number;
+  startX: number;
+  startZ: number;
+  tiltX: number;
+  tiltZ: number;
+  shadowX: number;
+  shadowZ: number;
+  snapBack: boolean;
+  snapT0: number | null;
+  settleT0: number | null;
+  spawnInit: boolean;
+}
+
+function newDragVis(food: PlacedFood): DragVis {
+  return {
+    isDragging: false,
+    targetX: food.position[0],
+    targetZ: food.position[2],
+    startX: food.position[0],
+    startZ: food.position[2],
+    tiltX: 0,
+    tiltZ: 0,
+    shadowX: food.position[0],
+    shadowZ: food.position[2],
+    snapBack: false,
+    snapT0: null,
+    settleT0: null,
+    spawnInit: false,
+  };
+}
+
+function foodFootprint(foodType: FoodType, size: PortionSize): number {
+  if (foodType === 'nasi') {
+    const c = nasiConfigFor(size);
+    return Math.max(c.radiusX, c.radiusZ);
+  }
+  if (foodType === 'ayam') return 0.35 * laukScaleFor(size);
+  return 0.3 * laukScaleFor(size);
 }
 
 function Plate({ scale }: { scale: number }) {
@@ -122,82 +183,212 @@ function SelectionRing({ position, radius }: { position: [number, number, number
   );
 }
 
+/** Soft landing shadow pinned to the plate at the real drop XZ. */
+function LandingShadow({ spotRef, radius }: {
+  spotRef: React.MutableRefObject<{ visible: boolean; x: number; z: number } | null>;
+  radius: number;
+}) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  useFrame(() => {
+    const m = meshRef.current;
+    if (!m) return;
+    const spot = spotRef.current;
+    if (!spot?.visible) {
+      m.visible = false;
+      return;
+    }
+    m.visible = true;
+    m.position.set(spot.x, 0.021, spot.z);
+  });
+  return (
+    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+      <circleGeometry args={[radius, 24]} />
+      <meshBasicMaterial color={0x000000} transparent opacity={0.28} depthWrite={false} />
+    </mesh>
+  );
+}
+
 interface PlacedFoodMeshProps {
   food: PlacedFood;
   isSelected: boolean;
   onPointerDown: (e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => void;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
   pendingUpdatesRef: React.RefObject<Map<string, Partial<PlacedFood>>>;
+  dragVisMap: React.MutableRefObject<Map<string, DragVis>>;
 }
 
-function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdatesRef }: PlacedFoodMeshProps) {
+function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdatesRef, dragVisMap }: PlacedFoodMeshProps) {
+  // All refs up-front: this component renders nasi XOR lauk per instanceId
+  // (foodType never changes for an id), so hook order stays stable.
+  const groupRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Mesh>(null);
   const baseRef = useRef<THREE.Mesh>(null);
-  const groupRef = useRef<THREE.Group>(null);
   const aoBlobRef = useRef<THREE.Mesh>(null);
-  const pourDoneRef = useRef(false);
+  const laukMeshRef = useRef<THREE.Mesh>(null);
+  const shadowSpotRef = useRef<{ visible: boolean; x: number; z: number } | null>(null);
+
+  const isNasi = food.foodType === 'nasi';
+  const laukScale = food.sizeScale ?? 1;
+  const restY = isNasi ? NASI_REST_Y : food.position[1];
+
+  // Arm the spawn settle exactly once per instanceId. Stale spawnedAt
+  // (e.g. a re-run after a rearrange commit changed position) is ignored so
+  // old pieces never replay the drop.
+  useEffect(() => {
+    if (food.spawnedAt === undefined) return;
+    if (Date.now() - food.spawnedAt > 1500) return;
+    let entry = dragVisMap.current.get(food.instanceId);
+    if (!entry) {
+      entry = newDragVis(food);
+      dragVisMap.current.set(food.instanceId, entry);
+    }
+    if (!entry.spawnInit) {
+      entry.spawnInit = true;
+      entry.settleT0 = food.spawnedAt;
+      entry.targetX = food.position[0];
+      entry.targetZ = food.position[2];
+      entry.shadowX = food.position[0];
+      entry.shadowZ = food.position[2];
+    }
+  }, [food.instanceId, food.spawnedAt, food.position, dragVisMap]);
 
   useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    const now = Date.now();
+
     const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
-
-    if (pendingUpdate?.position && groupRef.current) {
-      groupRef.current.position.set(
-        pendingUpdate.position[0],
-        0.05,
-        pendingUpdate.position[2]
-      );
-    }
-
-    if (pendingUpdate?.config && food.foodType === 'nasi') {
-      const newConfig = { ...food.config, ...pendingUpdate.config };
+    if (pendingUpdate?.config && isNasi) {
+      const newConfig = { ...(food.config as RiceMoundConfig), ...pendingUpdate.config };
       if (bodyRef.current) {
         bodyRef.current.scale.set(newConfig.radiusX, newConfig.height, newConfig.radiusZ);
       }
       if (baseRef.current) {
         baseRef.current.scale.set(newConfig.radiusX, newConfig.radiusZ, 1);
       }
-      // Update AO blob to scale with mound
       if (aoBlobRef.current) {
         const maxRad = Math.max(newConfig.radiusX, newConfig.radiusZ);
         aoBlobRef.current.scale.set(maxRad * 1.2, maxRad * 1.2, 1);
       }
     }
 
-    // Pour: Y drop + scale settle on the group (uniform group scale never
-    // fights the config-driven body/base scales above). Runs only while
-    // t < 1, then snaps to rest exactly once.
-    if (groupRef.current && !pourDoneRef.current) {
-      const t = pourProgress(food.spawnedAt, Date.now());
-      if (t >= 1) {
-        groupRef.current.position.y = 0.05;
-        groupRef.current.scale.setScalar(1);
-        pourDoneRef.current = true;
-      } else {
-        const e = easeOutCubic(t);
-        groupRef.current.position.y = 0.05 + POUR_DROP_H * (1 - e);
-        groupRef.current.scale.setScalar(0.55 + 0.45 * e);
+    const entry = dragVisMap.current.get(food.instanceId);
+    const baseScale = isNasi ? 1 : laukScale;
+
+    // --- Active lift: float above the plate, tilt toward the finger ------
+    if (entry?.isDragging) {
+      group.position.x = damp(group.position.x, entry.targetX, 0.4);
+      group.position.z = damp(group.position.z, entry.targetZ, 0.4);
+      group.position.y = damp(group.position.y, HOVER_Y, 0.3);
+      const s = damp(group.scale.x, baseScale * LIFT_SCALE, 0.3);
+      group.scale.set(s, s, s);
+      group.rotation.x = damp(group.rotation.x, entry.tiltX, 0.25);
+      group.rotation.z = damp(group.rotation.z, entry.tiltZ, 0.25);
+      if (aoBlobRef.current) {
+        const m = aoBlobRef.current.material as THREE.MeshBasicMaterial;
+        m.opacity = Math.max(0, m.opacity - 0.12);
       }
+      shadowSpotRef.current = { visible: true, x: entry.shadowX, z: entry.shadowZ };
+      return;
+    }
+
+    // --- Snap back: released off the plate (not trash) --------------------
+    if (entry?.snapBack && entry.snapT0 !== null) {
+      const t = Math.min(1, (now - entry.snapT0) / 180);
+      group.position.x = damp(group.position.x, entry.startX, 0.45);
+      group.position.z = damp(group.position.z, entry.startZ, 0.45);
+      group.position.y = damp(group.position.y, restY, 0.4);
+      const s = damp(group.scale.x, baseScale, 0.4);
+      group.scale.set(s, s, s);
+      group.rotation.x = damp(group.rotation.x, 0, 0.35);
+      group.rotation.z = damp(group.rotation.z, 0, 0.35);
+      shadowSpotRef.current = { visible: false, x: entry.startX, z: entry.startZ };
+      if (t >= 1) {
+        group.position.set(entry.startX, restY, entry.startZ);
+        group.scale.setScalar(baseScale);
+        group.rotation.set(0, 0, 0);
+        dragVisMap.current.delete(food.instanceId);
+        shadowSpotRef.current = null;
+      }
+      return;
+    }
+
+    // --- Settle: short drop + one squash (fresh drops and drag releases) --
+    if (entry?.settleT0 !== null && entry?.settleT0 !== undefined) {
+      const settleT0 = entry.settleT0 as number;
+      const commitX = entry.targetX;
+      const commitZ = entry.targetZ;
+      const dropT = Math.min(1, (now - settleT0) / DROP_MS);
+      if (dropT < 1) {
+        const e = easeInQuad(dropT);
+        group.position.x = commitX;
+        group.position.z = commitZ;
+        group.position.y = HOVER_Y + (restY - HOVER_Y) * e;
+        const s = baseScale * (LIFT_SCALE + (1 - LIFT_SCALE) * e);
+        group.scale.set(s, s, s);
+        group.rotation.x = damp(group.rotation.x, 0, 0.4);
+        group.rotation.z = damp(group.rotation.z, 0, 0.4);
+        shadowSpotRef.current = { visible: true, x: commitX, z: commitZ };
+        return;
+      }
+      const sqT = (now - settleT0 - DROP_MS) / SQUASH_MS;
+      if (sqT < 1) {
+        const bump = Math.sin(Math.PI * Math.max(0, sqT));
+        group.position.set(commitX, restY, commitZ);
+        group.scale.set(
+          baseScale * (1 + 0.12 * bump),
+          baseScale * (1 - 0.2 * bump),
+          baseScale * (1 + 0.12 * bump),
+        );
+        group.rotation.set(0, 0, 0);
+        shadowSpotRef.current = { visible: false, x: commitX, z: commitZ };
+        return;
+      }
+      group.position.set(commitX, restY, commitZ);
+      group.scale.setScalar(baseScale);
+      group.rotation.set(0, 0, 0);
+      dragVisMap.current.delete(food.instanceId);
+      shadowSpotRef.current = null;
+      return;
+    }
+
+    // --- Rest: hard-settle exactly (also heals StrictMode double frames) --
+    const px = pendingUpdate?.position ? pendingUpdate.position[0] : food.position[0];
+    const pz = pendingUpdate?.position ? pendingUpdate.position[2] : food.position[2];
+    group.position.set(px, restY, pz);
+    if (Math.abs(group.scale.x - baseScale) > 0.001) group.scale.setScalar(baseScale);
+    if (group.rotation.x !== 0 || group.rotation.z !== 0) group.rotation.set(0, 0, 0);
+    if (aoBlobRef.current) {
+      const m = aoBlobRef.current.material as THREE.MeshBasicMaterial;
+      if (m.opacity < 0.18) m.opacity = 0.18;
     }
   });
-  if (food.foodType === 'nasi' && food.config) {
-    const config = food.config;
+
+  if (isNasi && food.config) {
+    const config = pendingUpdatesRef.current?.get(food.instanceId)?.config
+      ? { ...food.config, ...pendingUpdatesRef.current.get(food.instanceId)!.config! }
+      : food.config;
     const pos = food.position;
     const maxRadius = Math.max(config.radiusX, config.radiusZ);
-    
+    const entry = dragVisMap.current.get(food.instanceId);
+    const dragging = entry?.isDragging ?? false;
+
     return (
       <group>
-        {isSelected && <SelectionRing position={pos} radius={maxRadius * 1.2} />}
-        
-        <group ref={groupRef} position={[pos[0], 0.05, pos[2]]}>
-          {/* Soft AO blob under rim */}
-          <mesh 
+        {isSelected && !dragging && <SelectionRing position={pos} radius={maxRadius * 1.2} />}
+        <LandingShadow spotRef={shadowSpotRef} radius={maxRadius} />
+
+        <group ref={groupRef} position={[pos[0], NASI_REST_Y, pos[2]]}>
+          {/* Soft AO blob under rim (fades while lifted; the landing shadow
+              marks the drop spot instead) */}
+          <mesh
             ref={aoBlobRef}
             position={[0, 0.001, 0]}
             rotation={[-Math.PI / 2, 0, 0]}
             scale={[maxRadius * 1.2, maxRadius * 1.2, 1]}
           >
             <ringGeometry args={[0.8, 1.0, 32]} />
-            <meshBasicMaterial 
+            <meshBasicMaterial
               color={0x000000}
               transparent
               opacity={0.18}
@@ -205,9 +396,9 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
             />
           </mesh>
 
-          <mesh 
+          <mesh
             ref={bodyRef}
-            castShadow 
+            castShadow
             position={[0, 0, 0]}
             scale={[config.radiusX, config.height, config.radiusZ]}
             name={`nasi-body-${food.instanceId}`}
@@ -217,10 +408,10 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
           >
             <sphereGeometry args={[1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
           </mesh>
-          
-          <mesh 
+
+          <mesh
             ref={baseRef}
-            castShadow 
+            castShadow
             position={[0, 0, 0]}
             rotation={[-Math.PI / 2, 0, 0]}
             scale={[config.radiusX, config.radiusZ, 1]}
@@ -231,8 +422,8 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
           >
             <circleGeometry args={[1, 32]} />
           </mesh>
-          
-          {isSelected && (
+
+          {isSelected && !dragging && (
             <>
               <mesh
                 position={[0, config.height, 0]}
@@ -243,7 +434,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
                 <sphereGeometry args={[0.15, 16, 16]} />
                 <meshStandardMaterial color="#4a9eff" emissive="#4a9eff" emissiveIntensity={0.5} />
               </mesh>
-              
+
               <mesh
                 position={[maxRadius * 0.7, 0, 0]}
                 rotation={[-Math.PI / 2, 0, 0]}
@@ -260,54 +451,14 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
       </group>
     );
   }
-  
-  const laukRef = useRef<THREE.Mesh>(null);
-  const laukMatRef = useRef<THREE.MeshStandardMaterial>(null);
-  const laukPourDoneRef = useRef(false);
-  // Size-sheet scale: mesh + ring only, kcal untouched.
-  const s = food.sizeScale ?? 1;
-
-  useFrame(() => {
-    const pendingUpdate = pendingUpdatesRef.current?.get(food.instanceId);
-    if (pendingUpdate?.position && laukRef.current) {
-      laukRef.current.position.set(
-        pendingUpdate.position[0],
-        pendingUpdate.position[1],
-        pendingUpdate.position[2]
-      );
-    }
-
-    // Pour: Y drop + scale settle + opacity-in. Each lauk mesh owns its
-    // material instance (JSX-created), so per-instance fade is safe.
-    if (laukRef.current && !laukPourDoneRef.current) {
-      const baseY = food.position[1];
-      const t = pourProgress(food.spawnedAt, Date.now());
-      if (t >= 1) {
-        laukRef.current.position.y = baseY;
-        laukRef.current.scale.setScalar(s);
-        if (laukMatRef.current) {
-          laukMatRef.current.opacity = 1;
-          laukMatRef.current.transparent = false;
-        }
-        laukPourDoneRef.current = true;
-      } else {
-        const e = easeOutCubic(t);
-        // Preserve x/z from any concurrent rearrange drag; own the y.
-        laukRef.current.position.y = baseY + POUR_DROP_H * (1 - e);
-        laukRef.current.scale.setScalar(s * (0.55 + 0.45 * e));
-        if (laukMatRef.current) {
-          laukMatRef.current.transparent = true;
-          laukMatRef.current.opacity = 0.15 + 0.85 * e;
-        }
-      }
-    }
-  });
 
   const pos = food.position;
+  const s = food.sizeScale ?? 1;
+  const entry = dragVisMap.current.get(food.instanceId);
+  const dragging = entry?.isDragging ?? false;
 
-  // Unit geometry; the size-sheet factor lives ONLY on the mesh scale
-  // (initial scale={s} + pour settle ending at setScalar(s)) so the visual
-  // footprint always matches getFoodRadius's single sizeScale.
+  // Unit geometry; the size-sheet factor lives ONLY on the group scale so
+  // the visual footprint always matches the collision radius.
   const geometry = food.foodType === 'ayam'
     ? <boxGeometry args={[0.6, 0.3, 0.5]} />
     : <sphereGeometry args={[0.3, 16, 16]} />;
@@ -317,19 +468,150 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
 
   return (
     <group>
-      {isSelected && <SelectionRing position={pos} radius={0.5 * s} />}
-      <mesh
-        ref={laukRef}
-        castShadow
-        position={pos}
-        scale={s}
-        name={`lauk-${food.instanceId}`}
-        onPointerDown={(e) => onPointerDown(e, food, 'body')}
-        onClick={(e) => onClick(e)}
-      >
-        {geometry}
-        <meshStandardMaterial ref={laukMatRef} color={isSelected ? selectedColor : color} roughness={0.7} metalness={0.1} />
+      {isSelected && !dragging && <SelectionRing position={pos} radius={0.5 * s} />}
+      <LandingShadow spotRef={shadowSpotRef} radius={0.5 * s} />
+      <group ref={groupRef} position={pos} scale={s}>
+        <mesh
+          ref={laukMeshRef}
+          castShadow
+          position={[0, 0, 0]}
+          name={`lauk-${food.instanceId}`}
+          onPointerDown={(e) => onPointerDown(e, food, 'body')}
+          onClick={(e) => onClick(e)}
+        >
+          {geometry}
+          <meshStandardMaterial color={isSelected ? selectedColor : color} roughness={0.7} metalness={0.1} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+/** Airborne tray preview: the dragged bahan floats above the plate with the
+ *  same lift + tilt as a placed piece, and its landing shadow stays pinned
+ *  to the plate. Hidden whenever the finger is off the plate (the HTML chip
+ *  ghost still follows the finger out there). Position source is
+ *  trayScreenRef — no React state per move. */
+function TrayGhostMesh({ trayDrag, trayScreenRef, plateScale }: {
+  trayDrag: TrayDrag | null;
+  trayScreenRef: React.MutableRefObject<{ x: number; y: number } | null>;
+  plateScale: number;
+}) {
+  const { camera, gl, scene } = useThree();
+  const groupRef = useRef<THREE.Group>(null);
+  const shadowRef = useRef<THREE.Mesh>(null);
+  const raycaster = useRef(new THREE.Raycaster());
+  const lastScreen = useRef<{ x: number; y: number } | null>(null);
+  const vel = useRef({ x: 0, z: 0 });
+
+  useFrame(() => {
+    const group = groupRef.current;
+    const shadow = shadowRef.current;
+    if (!group || !shadow) return;
+    if (!trayDrag) {
+      group.visible = false;
+      shadow.visible = false;
+      lastScreen.current = null;
+      return;
+    }
+    const screen = trayScreenRef.current;
+    if (!screen) {
+      group.visible = false;
+      shadow.visible = false;
+      lastScreen.current = null;
+      return;
+    }
+
+    // Pointer velocity → tilt toward the finger (smoothed, capped).
+    if (lastScreen.current) {
+      const dx = screen.x - lastScreen.current.x;
+      const dy = screen.y - lastScreen.current.y;
+      vel.current.x = damp(vel.current.x, clampTilt(dy * TILT_K * 4), 0.3);
+      vel.current.z = damp(vel.current.z, clampTilt(-dx * TILT_K * 4), 0.3);
+    }
+    lastScreen.current = { ...screen };
+
+    const canvas = gl.domElement;
+    const rect = canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((screen.x - rect.left) / rect.width) * 2 - 1,
+      -((screen.y - rect.top) / rect.height) * 2 + 1,
+    );
+    raycaster.current.setFromCamera(ndc, camera);
+    const plateMesh = scene.getObjectByName('plate');
+    if (!plateMesh) {
+      group.visible = false;
+      shadow.visible = false;
+      return;
+    }
+    const hits = raycaster.current.intersectObject(plateMesh, false);
+    if (hits.length === 0) {
+      group.visible = false;
+      shadow.visible = false;
+      return;
+    }
+    const p = hits[0].point.clone();
+    const plateRadius = 2 * plateScale * 0.9;
+    const dist = Math.sqrt(p.x * p.x + p.z * p.z);
+    if (dist > plateRadius) {
+      const k = plateRadius / dist;
+      p.x *= k;
+      p.z *= k;
+    }
+
+    group.visible = true;
+    shadow.visible = true;
+    group.position.x = damp(group.position.x, p.x, 0.5);
+    group.position.z = damp(group.position.z, p.z, 0.5);
+    group.position.y = damp(group.position.y || HOVER_Y, HOVER_Y, 0.5);
+    group.rotation.x = damp(group.rotation.x, vel.current.x, 0.3);
+    group.rotation.z = damp(group.rotation.z, vel.current.z, 0.3);
+    shadow.position.set(p.x, 0.021, p.z);
+  });
+
+  // Reset the lerp origin each time a new tray drag lifts off.
+  useEffect(() => {
+    if (trayDrag) {
+      lastScreen.current = null;
+      vel.current = { x: 0, z: 0 };
+      if (groupRef.current) groupRef.current.position.set(0, HOVER_Y, 0);
+    }
+  }, [trayDrag]);
+
+  if (!trayDrag) return null;
+  const { foodType, size } = trayDrag;
+  const ghostScale = foodType === 'nasi' ? 1 : laukScaleFor(size);
+  const ghostRadius = foodFootprint(foodType, size);
+  const nasiCfg = foodType === 'nasi' ? nasiConfigFor(size) : null;
+  const ghostColor = foodType === 'ayam' ? '#d4a574' : foodType === 'telur' ? '#f4e4c1' : '#fff4e6';
+
+  return (
+    <group>
+      <mesh ref={shadowRef} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+        <circleGeometry args={[ghostRadius, 24]} />
+        <meshBasicMaterial color={0x000000} transparent opacity={0.28} depthWrite={false} />
       </mesh>
+      <group ref={groupRef} position={[0, HOVER_Y, 0]} scale={ghostScale * LIFT_SCALE} visible={false}>
+        {nasiCfg ? (
+          <>
+            <mesh scale={[nasiCfg.radiusX, nasiCfg.height, nasiCfg.radiusZ]}>
+              <sphereGeometry args={[1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
+              <meshStandardMaterial color={ghostColor} roughness={0.92} metalness={0} transparent opacity={0.96} />
+            </mesh>
+            <mesh rotation={[-Math.PI / 2, 0, 0]} scale={[nasiCfg.radiusX, nasiCfg.radiusZ, 1]}>
+              <circleGeometry args={[1, 32]} />
+              <meshStandardMaterial color={ghostColor} roughness={0.92} metalness={0} transparent opacity={0.96} />
+            </mesh>
+          </>
+        ) : (
+          <mesh castShadow>
+            {foodType === 'ayam'
+              ? <boxGeometry args={[0.6, 0.3, 0.5]} />
+              : <sphereGeometry args={[0.3, 16, 16]} />}
+            <meshStandardMaterial color={ghostColor} roughness={0.7} metalness={0.1} transparent opacity={0.96} />
+          </mesh>
+        )}
+      </group>
     </group>
   );
 }
@@ -338,6 +620,7 @@ interface ManipState {
   food: PlacedFood;
   part: 'top' | 'body' | 'foot';
   startScreenPos: { x: number; y: number };
+  lastScreenPos: { x: number; y: number };
   startConfig?: RiceMoundConfig;
   startFoodPos?: [number, number, number];
   startMoundCenter?: { x: number; z: number };
@@ -353,6 +636,8 @@ function SceneContent({
   onFoodRemove,
   onPlacedDragStateChange,
   trashZoneRef,
+  trayDrag,
+  trayScreenRef,
   onRaycastReady
 }: SceneProps) {
   const { camera, gl, scene } = useThree();
@@ -361,6 +646,7 @@ function SceneContent({
   const [manipulating, setManipulating] = useState(false);
   const manipStateRef = useRef<ManipState | null>(null);
   const pendingUpdatesRef = useRef<Map<string, Partial<PlacedFood>>>(new Map());
+  const dragVisMap = useRef<Map<string, DragVis>>(new Map());
   const primaryPointerIdRef = useRef<number | null>(null);
   const onFoodUpdateRef = useRef(onFoodUpdate);
   const onFoodRemoveRef = useRef(onFoodRemove);
@@ -381,8 +667,8 @@ function SceneContent({
   // Trash drop target lives in the DOM (plate chrome corner) with
   // pointer-events:none so it never fights OrbitControls. Hit-testing here
   // reads its rect directly — no React state per move, keeping mobile drags
-  // free of setState storms. Only body-drags that actually moved can delete,
-  // so taps/selects and nasi sculpt handles (top/foot) never remove.
+  // free of setState storms. Only placed body-drags that actually moved can
+  // delete, so taps/selects and nasi sculpt handles (top/foot) never remove.
   const isOverTrash = useCallback((screenPos: { x: number; y: number }) => {
     const el = trashZoneRef?.current;
     if (!el) return false;
@@ -415,7 +701,7 @@ function SceneContent({
   const screenToNDC = useCallback((screenPos: { x: number; y: number }) => {
     const canvas = gl.domElement;
     const rect = canvas.getBoundingClientRect();
-    
+
     return new THREE.Vector2(
       ((screenPos.x - rect.left) / rect.width) * 2 - 1,
       -((screenPos.y - rect.top) / rect.height) * 2 + 1
@@ -425,34 +711,34 @@ function SceneContent({
   const raycastPlate = useCallback((screenPos: { x: number; y: number }) => {
     const mouse = screenToNDC(screenPos);
     raycaster.current.setFromCamera(mouse, camera);
-    
+
     const plateMesh = scene.getObjectByName('plate');
     if (!plateMesh) return null;
 
     const intersects = raycaster.current.intersectObject(plateMesh, false);
-    
+
     if (intersects.length > 0) {
       const point = intersects[0].point.clone();
-      
+
       const plateRadius = 2 * plateScale * 0.9;
       const distance = Math.sqrt(point.x * point.x + point.z * point.z);
-      
+
       if (distance > plateRadius) {
         const scale = plateRadius / distance;
         point.x *= scale;
         point.z *= scale;
       }
-      
+
       return { x: point.x, y: point.y, z: point.z };
     }
-    
+
     return null;
   }, [camera, scene, plateScale, screenToNDC]);
 
   const raycastFood = useCallback((screenPos: { x: number; y: number }) => {
     const mouse = screenToNDC(screenPos);
     raycaster.current.setFromCamera(mouse, camera);
-    
+
     const foodMeshes: THREE.Object3D[] = [];
     scene.traverse((obj) => {
       if (obj.name.startsWith('nasi-') || obj.name.startsWith('lauk-')) {
@@ -461,22 +747,22 @@ function SceneContent({
     });
 
     const intersects = raycaster.current.intersectObjects(foodMeshes, false);
-    
+
     if (intersects.length > 0) {
       const hit = intersects[0];
       const name = hit.object.name;
-      
+
       for (const food of placedFoods) {
         if (name.includes(food.instanceId)) {
           let part: 'top' | 'body' | 'foot' = 'body';
           if (name.includes('-top-')) part = 'top';
           else if (name.includes('-base-') || name.includes('-foot-')) part = 'foot';
-          
+
           return { food, part };
         }
       }
     }
-    
+
     return null;
   }, [camera, scene, placedFoods, screenToNDC]);
 
@@ -491,39 +777,39 @@ function SceneContent({
       if (!e.isPrimary && primaryPointerIdRef.current !== null && e.pointerId !== primaryPointerIdRef.current) {
         return;
       }
-      
+
       const manipState = manipStateRef.current;
       if (!manipState) return;
 
       const currentScreenPos = { x: e.clientX, y: e.clientY };
       // Direct DOM highlight only (no setState per move); trash accepts
-      // body-drags, never nasi sculpt handles.
+      // placed body-drags, never nasi sculpt handles or tray ghosts.
       setTrashHighlight(manipState.part === 'body' && isOverTrash(currentScreenPos));
       const screenDelta = {
         x: currentScreenPos.x - manipState.startScreenPos.x,
         y: currentScreenPos.y - manipState.startScreenPos.y
       };
-      
+
       const moveThreshold = 5;
       const hasMoved = Math.abs(screenDelta.x) > moveThreshold || Math.abs(screenDelta.y) > moveThreshold;
-      
+
       if (!hasMoved && !manipState.moved) return;
-      
+
       if (!manipState.moved) {
         manipStateRef.current = { ...manipState, moved: true };
       }
-      
+
       const { food, part, startConfig, startFoodPos, startMoundCenter } = manipState;
-      
+
       if (food.foodType === 'nasi' && food.config && startConfig && startFoodPos) {
         if (part === 'top') {
           const heightSensitivity = 0.01;
           const deltaHeight = -screenDelta.y * heightSensitivity;
           const newHeight = Math.max(0.2, Math.min(2.0, startConfig.height + deltaHeight));
-          
+
           if (!isNaN(newHeight) && isFinite(newHeight) && newHeight > 0) {
-            pendingUpdatesRef.current.set(food.instanceId, { 
-              config: { ...food.config, height: newHeight } 
+            pendingUpdatesRef.current.set(food.instanceId, {
+              config: { ...food.config, height: newHeight }
             });
           }
         } else if (part === 'body') {
@@ -531,18 +817,32 @@ function SceneContent({
           if (hitPos) {
             const plateRadius = 2 * plateScale * 0.9;
             const distance = Math.sqrt(hitPos.x * hitPos.x + hitPos.z * hitPos.z);
-            
+
             if (!isNaN(distance) && isFinite(distance)) {
-              if (distance <= plateRadius) {
-                pendingUpdatesRef.current.set(food.instanceId, { 
-                  position: [hitPos.x, startFoodPos[1], hitPos.z] 
-                });
-              } else {
+              let tx = hitPos.x;
+              let tz = hitPos.z;
+              if (distance > plateRadius) {
                 const scale = plateRadius / distance;
-                pendingUpdatesRef.current.set(food.instanceId, { 
-                  position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] 
-                });
+                tx = hitPos.x * scale;
+                tz = hitPos.z * scale;
               }
+              pendingUpdatesRef.current.set(food.instanceId, {
+                position: [tx, startFoodPos[1], tz]
+              });
+              // Lift visuals: target + tilt toward the finger. All ref-side,
+              // applied in the mesh useFrame — zero setState per move.
+              const entry = dragVisMap.current.get(food.instanceId);
+              if (entry) {
+                entry.targetX = tx;
+                entry.targetZ = tz;
+                entry.shadowX = tx;
+                entry.shadowZ = tz;
+                const mdx = currentScreenPos.x - manipState.lastScreenPos.x;
+                const mdy = currentScreenPos.y - manipState.lastScreenPos.y;
+                entry.tiltX = damp(entry.tiltX, clampTilt(entry.tiltX * 0.6 + mdy * TILT_K * 4), 0.6);
+                entry.tiltZ = damp(entry.tiltZ, clampTilt(entry.tiltZ * 0.6 - mdx * TILT_K * 4), 0.6);
+              }
+              manipState.lastScreenPos = currentScreenPos;
             }
           }
         } else if (part === 'foot') {
@@ -553,13 +853,13 @@ function SceneContent({
             const currentDistZ = hitPos.z - startMoundCenter.z;
             const currentDist = Math.sqrt(currentDistX * currentDistX + currentDistZ * currentDistZ);
             const signedRadialDelta = currentDist - startRadius;
-            
+
             const newRadiusX = Math.max(0.5, Math.min(2.0, startConfig.radiusX + signedRadialDelta));
             const newRadiusZ = Math.max(0.5, Math.min(2.0, startConfig.radiusZ + signedRadialDelta));
-            
+
             if (!isNaN(newRadiusX) && !isNaN(newRadiusZ) && isFinite(newRadiusX) && isFinite(newRadiusZ) && newRadiusX > 0 && newRadiusZ > 0) {
-              pendingUpdatesRef.current.set(food.instanceId, { 
-                config: { ...food.config, radiusX: newRadiusX, radiusZ: newRadiusZ } 
+              pendingUpdatesRef.current.set(food.instanceId, {
+                config: { ...food.config, radiusX: newRadiusX, radiusZ: newRadiusZ }
               });
             }
           }
@@ -569,18 +869,30 @@ function SceneContent({
         if (hitPos) {
           const plateRadius = 2 * plateScale * 0.9;
           const distance = Math.sqrt(hitPos.x * hitPos.x + hitPos.z * hitPos.z);
-          
+
           if (!isNaN(distance) && isFinite(distance)) {
-            if (distance <= plateRadius) {
-              pendingUpdatesRef.current.set(food.instanceId, { 
-                position: [hitPos.x, startFoodPos[1], hitPos.z] 
-              });
-            } else {
+            let tx = hitPos.x;
+            let tz = hitPos.z;
+            if (distance > plateRadius) {
               const scale = plateRadius / distance;
-              pendingUpdatesRef.current.set(food.instanceId, { 
-                position: [hitPos.x * scale, startFoodPos[1], hitPos.z * scale] 
-              });
+              tx = hitPos.x * scale;
+              tz = hitPos.z * scale;
             }
+            pendingUpdatesRef.current.set(food.instanceId, {
+              position: [tx, startFoodPos[1], tz]
+            });
+            const entry = dragVisMap.current.get(food.instanceId);
+            if (entry) {
+              entry.targetX = tx;
+              entry.targetZ = tz;
+              entry.shadowX = tx;
+              entry.shadowZ = tz;
+              const mdx = currentScreenPos.x - manipState.lastScreenPos.x;
+              const mdy = currentScreenPos.y - manipState.lastScreenPos.y;
+              entry.tiltX = damp(entry.tiltX, clampTilt(entry.tiltX * 0.6 + mdy * TILT_K * 4), 0.6);
+              entry.tiltZ = damp(entry.tiltZ, clampTilt(entry.tiltZ * 0.6 - mdx * TILT_K * 4), 0.6);
+            }
+            manipState.lastScreenPos = currentScreenPos;
           }
         }
       }
@@ -614,9 +926,54 @@ function SceneContent({
         isOverTrash(dropPos)
       ) {
         pendingUpdatesRef.current.clear();
+        dragVisMap.current.delete(manipState.food.instanceId);
         const removedId = manipState.food.instanceId;
         endPlacedDrag();
         onFoodRemoveRef.current(removedId);
+        return;
+      }
+
+      if (manipState && manipState.part === 'body') {
+        const entry = dragVisMap.current.get(manipState.food.instanceId);
+        // Untouched tap: no visuals to settle, just select.
+        if (!manipState.moved) {
+          if (entry) dragVisMap.current.delete(manipState.food.instanceId);
+          pendingUpdatesRef.current.delete(manipState.food.instanceId);
+          endPlacedDrag();
+          return;
+        }
+        const plateHit = raycastPlate(dropPos);
+        if (plateHit && entry) {
+          // Landed on the plate: commit (App soft-pushes apart, nasi never
+          // merges) and run one short drop + squash via the entry.
+          const pending = pendingUpdatesRef.current.get(manipState.food.instanceId);
+          if (pending?.position) {
+            onFoodUpdateRef.current(manipState.food.instanceId, pending);
+            entry.targetX = pending.position[0];
+            entry.targetZ = pending.position[2];
+            entry.shadowX = pending.position[0];
+            entry.shadowZ = pending.position[2];
+          }
+          pendingUpdatesRef.current.delete(manipState.food.instanceId);
+          entry.isDragging = false;
+          entry.snapBack = false;
+          entry.settleT0 = Date.now();
+          entry.tiltX = 0;
+          entry.tiltZ = 0;
+          endPlacedDrag();
+          return;
+        }
+        // Released off the plate (and not on trash): snap back to the grab
+        // spot. Nothing lands in empty space; no state commit.
+        if (entry) {
+          entry.isDragging = false;
+          entry.snapBack = true;
+          entry.snapT0 = Date.now();
+          entry.tiltX = 0;
+          entry.tiltZ = 0;
+        }
+        pendingUpdatesRef.current.delete(manipState.food.instanceId);
+        endPlacedDrag();
         return;
       }
 
@@ -643,30 +1000,37 @@ function SceneContent({
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>, food: PlacedFood, part: 'top' | 'body' | 'foot') => {
     e.stopPropagation();
-    
+
     if (!e.nativeEvent.isPrimary) {
       return;
     }
-    
+
     if (orbitRef.current) {
       orbitRef.current.enabled = false;
     }
-    
+
     primaryPointerIdRef.current = e.nativeEvent.pointerId;
     onSelectFood(food.instanceId);
-    onPlacedDragStateChangeRef.current?.(true, food.instanceId);
+    const startPos: [number, number, number] = [...food.position] as [number, number, number];
     manipStateRef.current = {
       food,
       part,
       startScreenPos: { x: e.nativeEvent.clientX, y: e.nativeEvent.clientY },
+      lastScreenPos: { x: e.nativeEvent.clientX, y: e.nativeEvent.clientY },
       startConfig: food.config ? { ...food.config } : undefined,
-      startFoodPos: [...food.position],
+      startFoodPos: startPos,
       startMoundCenter: food.position ? { x: food.position[0], z: food.position[2] } : undefined,
       moved: false
     };
+    if (part === 'body') {
+      // Arm the lift: the mesh floats on first move, trash shows now.
+      const entry = newDragVis(food);
+      entry.isDragging = true;
+      dragVisMap.current.set(food.instanceId, entry);
+      onPlacedDragStateChangeRef.current?.(true, food.instanceId);
+    }
     setManipulating(true);
   }, [onSelectFood]);
-
 
   const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
@@ -693,21 +1057,23 @@ function SceneContent({
         enableZoom={true}
         touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_ROTATE }}
       />
-      
-      <mesh 
-        receiveShadow 
-        rotation={[-Math.PI / 2, 0, 0]} 
+
+      <mesh
+        receiveShadow
+        rotation={[-Math.PI / 2, 0, 0]}
         position={[0, -0.06, 0]}
         onClick={handlePlateClick}
       >
         <planeGeometry args={[20, 20]} />
         <shadowMaterial opacity={0.3} />
       </mesh>
-      
+
       <group onClick={handlePlateClick}>
         <Plate scale={plateScale} />
       </group>
-      
+
+      <TrayGhostMesh trayDrag={trayDrag} trayScreenRef={trayScreenRef} plateScale={plateScale} />
+
       {placedFoods.map(food => (
         <PlacedFoodMesh
           key={food.instanceId}
@@ -716,6 +1082,7 @@ function SceneContent({
           onPointerDown={handlePointerDown}
           onClick={handleClick}
           pendingUpdatesRef={pendingUpdatesRef}
+          dragVisMap={dragVisMap}
         />
       ))}
     </>
@@ -731,24 +1098,26 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
   onFoodUpdate,
   onFoodRemove,
   onPlacedDragStateChange,
-  trashZoneRef
+  trashZoneRef,
+  trayDrag,
+  trayScreenRef
 }, ref) => {
   const bgColor = theme === 'dark' ? '#0a0e1a' : '#f8f9fa';
   const raycastHandleRef = useRef<RaycastHandle | null>(null);
   const [contextLost, setContextLost] = useState(false);
-  
-  const isMobile = typeof window !== 'undefined' && 
+
+  const isMobile = typeof window !== 'undefined' &&
     (window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 768);
-  
+
   useImperativeHandle(ref, () => ({
     raycastPlate: (screenPos) => raycastHandleRef.current?.raycastPlate(screenPos) || null,
     raycastFood: (screenPos) => raycastHandleRef.current?.raycastFood(screenPos) || null,
   }));
-  
+
   const handleRaycastReady = useCallback((handle: RaycastHandle) => {
     raycastHandleRef.current = handle;
   }, []);
-  
+
   if (contextLost) {
     return (
       <div style={{
@@ -783,7 +1152,15 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
       </div>
     );
   }
-  
+
+  const hint = trayDrag
+    ? '🎯 Lepas di atas piring…'
+    : placedFoods.length === 0
+      ? '🍚 Seret bahan ke piring · cubit untuk zoom'
+      : selectedFoodId
+        ? '✋ Seret makanan untuk geser · ubah porsi di dock · seret ke 🗑️ untuk buang'
+        : '🍚 Seret bahan ke piring · seret makanan di piring untuk geser';
+
   return (
     <>
       <Canvas
@@ -819,7 +1196,7 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           angle={0.6}
           penumbra={1}
         />
-        
+
         <SceneContent
           plateScale={plateScale}
           placedFoods={placedFoods}
@@ -829,18 +1206,15 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
           onFoodRemove={onFoodRemove}
           onPlacedDragStateChange={onPlacedDragStateChange}
           trashZoneRef={trashZoneRef}
+          trayDrag={trayDrag}
+          trayScreenRef={trayScreenRef}
           onRaycastReady={handleRaycastReady}
         />
-        
+
         {!isMobile && <Environment preset="apartment" frames={1} />}
       </Canvas>
       <div className="canvas-hint">
-        {placedFoods.length === 0
-          ? '👆 Tap bahan, pilih porsi'
-          : selectedFoodId
-          ? '✋ Tarik untuk ubah • Buang di dock bawah • Tap di luar untuk batal'
-          : '👆 Tap makanan untuk pilih • Tarik untuk memutar'
-        }
+        {hint}
       </div>
     </>
   );
