@@ -5,7 +5,7 @@ import Palette, { PaletteItem } from './components/Palette';
 import ErrorBoundary from './components/ErrorBoundary';
 import { PlateSize, PlacedFood, FoodType, PortionSize, PLATE_SIZES, AYAM_KCAL, TELUR_KCAL } from './types';
 import { calculateNutritionEstimate } from './utils/calculations';
-import { nasiConfigFor, laukScaleFor, foodRadius } from './utils/sizes';
+import { nasiConfigFor, laukScaleFor, foodRadius, supportHeightAt, restYOnSupport, baseYOf, PLATE_TOP_Y, STACK_SINK } from './utils/sizes';
 import './styles.css';
 
 export interface RaycastHandle {
@@ -76,7 +76,7 @@ function App() {
     trayDragRef.current = trayDrag;
   }, [trayDrag]);
   // Fresh-array mirror so rapid successive drops sequence losslessly.
-  // resolveCollisions is pure (no id minting), so it can run anywhere.
+  // resolveDrop is pure (no id minting), so it can run anywhere.
   const placedFoodsRef = useRef(placedFoods);
   useEffect(() => {
     placedFoodsRef.current = placedFoods;
@@ -130,17 +130,46 @@ function App() {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
 
-  // Soft no-overlap for EVERY pair — nasi↔nasi included. Nasi never merges:
-  // each scoop stays its own 3D object, calories add per piece. The moving
-  // food is pushed out of overlap iteratively, then clamped to the plate.
-  const resolveCollisions = useCallback((
+  // Drop resolution: stack OR side-by-side. When the drop point lands on
+  // top of another piece (and stacking is allowed for this gesture), the
+  // piece keeps its XZ and rests on that piece's top surface — nasi still
+  // never merges, it just perches. Otherwise the classic soft-push slides
+  // it to a free side spot. Either way the result is clamped to the plate.
+  // Tap-to-place (auto spot) passes allowStack: false so it always finds a
+  // free side spot instead of piling up at center.
+  const resolveDrop = useCallback((
     newFood: PlacedFood,
     existingFoods: PlacedFood[],
-    plateRadius: number
+    plateRadius: number,
+    allowStack: boolean
   ): PlacedFood => {
-    const movingRadius = foodRadius(newFood.foodType, newFood.config, newFood.sizeScale);
+    const plateEps = 0.01;
     let x = newFood.position[0];
     let z = newFood.position[2];
+    const maxDist = plateRadius * 0.9;
+
+    // Clamp to plate first so support is measured at the real landing spot.
+    const plateDist = Math.sqrt(x * x + z * z);
+    if (plateDist > maxDist) {
+      const scale = maxDist / plateDist;
+      x *= scale;
+      z *= scale;
+    }
+
+    if (allowStack) {
+      const support = supportHeightAt(x, z, existingFoods);
+      if (support > PLATE_TOP_Y + plateEps) {
+        // Landed on another piece: perch on its top, nestled slightly in.
+        const restY = restYOnSupport(
+          newFood.foodType,
+          Math.max(PLATE_TOP_Y, support - STACK_SINK),
+        );
+        return { ...newFood, position: [x, restY, z] };
+      }
+    }
+
+    // Side-by-side: iterative soft-push out of every XZ overlap.
+    const movingRadius = foodRadius(newFood.foodType, newFood.config, newFood.sizeScale);
     const epsilon = 0.05;
 
     const maxPasses = 5;
@@ -176,20 +205,57 @@ function App() {
       if (!anyOverlap) break;
     }
 
-    // Clamp to plate
-    const plateDist = Math.sqrt(x * x + z * z);
-    const maxDist = plateRadius * 0.9;
-    if (plateDist > maxDist) {
-      const scale = maxDist / plateDist;
+    // Re-clamp after the push.
+    const pushedDist = Math.sqrt(x * x + z * z);
+    if (pushedDist > maxDist) {
+      const scale = maxDist / pushedDist;
       x *= scale;
       z *= scale;
     }
 
-    return { ...newFood, position: [x, newFood.position[1], z] };
+    const plateRestY = restYOnSupport(newFood.foodType, PLATE_TOP_Y);
+    return { ...newFood, position: [x, plateRestY, z] };
   }, []);
 
-  // Place one piece at an explicit plate XZ (tray drop or rearrange commit).
-  const addFoodAt = useCallback((foodType: FoodType, size: PortionSize, x: number, z: number) => {
+  // After a support is dragged away or deleted, pieces that lost their perch
+  // drop back down (lowest first, so stacks re-seat in one pass). Pieces that
+  // still have support stay put. Dropped pieces get a fresh spawnedAt so the
+  // plate plays the same short drop + squash. Never lifts anything.
+  const resettleFloating = useCallback((foods: PlacedFood[]): { foods: PlacedFood[]; settled: boolean } => {
+    const now = Date.now();
+    const byBase = [...foods].sort((a, b) => baseYOf(a) - baseYOf(b));
+    const seated: PlacedFood[] = [];
+    const nextById = new Map<string, PlacedFood>();
+    let settled = false;
+
+    for (const food of byBase) {
+      const support = supportHeightAt(food.position[0], food.position[2], seated);
+      const base = baseYOf(food);
+      if (base > support + 0.02) {
+        const restY = restYOnSupport(food.foodType, support);
+        const dropped: PlacedFood = {
+          ...food,
+          position: [food.position[0], restY, food.position[2]],
+          spawnedAt: now,
+        };
+        seated.push(dropped);
+        nextById.set(food.instanceId, dropped);
+        settled = true;
+      } else {
+        seated.push(food);
+        nextById.set(food.instanceId, food);
+      }
+    }
+
+    if (!settled) return { foods, settled: false };
+    return { foods: foods.map(f => nextById.get(f.instanceId) ?? f), settled: true };
+  }, []);
+
+  // Place one piece at an explicit plate XZ.
+  // allowStack=true for real finger drops (tray drop, rearrange): landing on
+  // another piece perches on top. Tap-to-place uses allowStack=false so it
+  // always finds a free side spot instead of piling at center.
+  const addFoodAt = useCallback((foodType: FoodType, size: PortionSize, x: number, z: number, allowStack: boolean) => {
     const basis = placedFoodsRef.current;
     const plateRadius = plateSize.scale * 2;
     const now = Date.now();
@@ -215,21 +281,22 @@ function App() {
       };
     }
 
-    const resolved = resolveCollisions(draft, basis, plateRadius);
+    const resolved = resolveDrop(draft, basis, plateRadius, allowStack);
     const next = [...basis, resolved];
     placedFoodsRef.current = next;
     setPlacedFoods(next);
     setSelectedFoodId(resolved.instanceId);
     return resolved;
-  }, [plateSize.scale, resolveCollisions]);
+  }, [plateSize.scale, resolveDrop]);
 
   // Free-spot finder for tap-to-place: nasi aims center, lauk orbit the
-  // mound on a golden-angle ring. Collisions still soft-push the result.
+  // mound on a golden-angle ring. Never auto-stacks; collisions still
+  // soft-push the result to a free side spot.
   const placeAtAutoSpot = useCallback((foodType: FoodType, size: PortionSize) => {
     const basis = placedFoodsRef.current;
     const plateRadius = plateSize.scale * 2;
     if (foodType === 'nasi') {
-      return addFoodAt(foodType, size, 0, 0);
+      return addFoodAt(foodType, size, 0, 0, false);
     }
     let x = 0;
     let z = 0;
@@ -246,7 +313,7 @@ function App() {
       x = cx + Math.cos(angle) * ringR;
       z = cz + Math.sin(angle) * ringR;
     }
-    return addFoodAt(foodType, size, x, z);
+    return addFoodAt(foodType, size, x, z, false);
   }, [addFoodAt, plateSize.scale]);
 
   // ---- Tray drag (chip + size-sheet sources share one airborne slot) ----
@@ -267,7 +334,7 @@ function App() {
     if (screenPos.x < 0 || screenPos.y < 0) return false;
     const hit = raycastRef.current?.raycastPlate(screenPos) ?? null;
     if (!hit) return false;
-    addFoodAt(drag.foodType, drag.size, hit.x, hit.z);
+    addFoodAt(drag.foodType, drag.size, hit.x, hit.z, true);
     return true;
   }, [addFoodAt]);
 
@@ -355,57 +422,65 @@ function App() {
   }, [handleSizeTap, handleTrayDragEnd]);
 
   const handleFoodUpdate = useCallback((instanceId: string, updates: Partial<PlacedFood>) => {
-    setPlacedFoods(prev => {
-      const updatedFoods = prev.map(food =>
-        food.instanceId === instanceId ? { ...food, ...updates } : food
+    // Ref-first (not a setState updater) so the pure drop math and the
+    // Date.now() settle stamps stay StrictMode-safe.
+    const prev = placedFoodsRef.current;
+    const target = prev.find(f => f.instanceId === instanceId);
+    if (!target) return;
+
+    // Rearrange drags stack-or-push at the drop point, then anything left
+    // floating where the piece used to be drops back down.
+    if (updates.position) {
+      const moving = { ...target, ...updates };
+      const others = prev.filter(f => f.instanceId !== instanceId);
+      const resolved = resolveDrop(moving, others, plateSize.scale * 2, true);
+      const landed = prev.map(food =>
+        food.instanceId === instanceId ? resolved : food
       );
+      const { foods } = resettleFloating(landed);
+      placedFoodsRef.current = foods;
+      setPlacedFoods(foods);
+      return;
+    }
 
-      // Only position changes need the soft-push pass (rearrange drags).
-      if (updates.position) {
-        const movingFood = updatedFoods.find(f => f.instanceId === instanceId);
-        if (movingFood) {
-          const others = updatedFoods.filter(f => f.instanceId !== instanceId);
-          const resolved = resolveCollisions(movingFood, others, plateSize.scale * 2);
-          return updatedFoods.map(food =>
-            food.instanceId === instanceId
-              ? { ...food, position: resolved.position }
-              : food
-          );
-        }
-      }
-
-      // Config-only or other updates: apply without collision check
-      return updatedFoods;
-    });
-  }, [resolveCollisions, plateSize.scale]);
+    // Config-only or other updates: apply without collision check
+    const next = prev.map(food =>
+      food.instanceId === instanceId ? { ...food, ...updates } : food
+    );
+    placedFoodsRef.current = next;
+    setPlacedFoods(next);
+  }, [resolveDrop, resettleFloating, plateSize.scale]);
 
   // Dock resize: swap the selected piece to a canonical portion. Honest by
   // construction — nasi grams come from the shared volume math, lauk kcal
-  // never changes with size. A resize that now overlaps soft-pushes apart.
+  // never changes with size. The piece keeps its perch; anything left
+  // floating by the new footprint drops back down.
   const handleResizeSelected = useCallback((size: PortionSize) => {
     const id = selectedFoodId;
     if (!id) return;
-    setPlacedFoods(prev => {
-      const target = prev.find(f => f.instanceId === id);
-      if (!target) return prev;
-      let draft: PlacedFood;
-      if (target.foodType === 'nasi') {
-        draft = { ...target, config: nasiConfigFor(size), portionSize: size };
-      } else {
-        draft = { ...target, sizeScale: laukScaleFor(size), portionSize: size };
-      }
-      const others = prev.filter(f => f.instanceId !== id);
-      const resolved = resolveCollisions(draft, others, plateSize.scale * 2);
-      placedFoodsRef.current = prev.map(f => (f.instanceId === id ? resolved : f));
-      return placedFoodsRef.current;
-    });
-  }, [selectedFoodId, resolveCollisions, plateSize.scale]);
+    const prev = placedFoodsRef.current;
+    const target = prev.find(f => f.instanceId === id);
+    if (!target) return;
+    let draft: PlacedFood;
+    if (target.foodType === 'nasi') {
+      draft = { ...target, config: nasiConfigFor(size), portionSize: size };
+    } else {
+      draft = { ...target, sizeScale: laukScaleFor(size), portionSize: size };
+    }
+    const next = prev.map(f => (f.instanceId === id ? draft : f));
+    const { foods } = resettleFloating(next);
+    placedFoodsRef.current = foods;
+    setPlacedFoods(foods);
+  }, [selectedFoodId, resettleFloating]);
 
   const handleRemoveFood = useCallback((instanceId: string) => {
-    setPlacedFoods(prev => prev.filter(food => food.instanceId !== instanceId));
-    setSelectedFoodId(prev => (prev === instanceId ? null : prev));
-    setPlacedDraggingId(prev => (prev === instanceId ? null : prev));
-  }, []);
+    const prev = placedFoodsRef.current;
+    const { foods } = resettleFloating(prev.filter(food => food.instanceId !== instanceId));
+    placedFoodsRef.current = foods;
+    setPlacedFoods(foods);
+    setSelectedFoodId(prevSel => (prevSel === instanceId ? null : prevSel));
+    setPlacedDraggingId(prevDrag => (prevDrag === instanceId ? null : prevDrag));
+  }, [resettleFloating]);
 
   // Called by Plate3D only on placed-drag start/end (never per-move).
   const handlePlacedDragStateChange = useCallback((dragging: boolean, instanceId: string | null) => {

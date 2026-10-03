@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame, ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PlacedFood, RiceMoundConfig, FoodType, PortionSize } from '../types';
-import { nasiConfigFor, laukScaleFor } from '../utils/sizes';
+import { nasiConfigFor, laukScaleFor, NASI_REST_Y } from '../utils/sizes';
 import type { TrayDrag } from '../App';
 
 // Simple grain shader injection for rice texture
@@ -61,7 +61,6 @@ nasiMaterialSelected.onBeforeCompile = addGrainShader;
 // plate runs one short drop (DROP_MS) plus a single squash (SQUASH_MS) and
 // settles. Release off the plate snaps back — nothing lands in empty space.
 const HOVER_Y = 0.95;
-const NASI_REST_Y = 0.05;
 const LIFT_SCALE = 1.08;
 const DROP_MS = 170;
 const SQUASH_MS = 230;
@@ -176,7 +175,7 @@ function Plate({ scale }: { scale: number }) {
 
 function SelectionRing({ position, radius }: { position: [number, number, number]; radius: number }) {
   return (
-    <mesh position={[position[0], 0.01, position[2]]} rotation={[-Math.PI / 2, 0, 0]}>
+    <mesh position={[position[0], 0.07, position[2]]} rotation={[-Math.PI / 2, 0, 0]}>
       <ringGeometry args={[radius * 0.9, radius * 1.1, 32]} />
       <meshBasicMaterial color="#4a9eff" transparent opacity={0.5} side={THREE.DoubleSide} />
     </mesh>
@@ -229,7 +228,9 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
 
   const isNasi = food.foodType === 'nasi';
   const laukScale = food.sizeScale ?? 1;
-  const restY = isNasi ? NASI_REST_Y : food.position[1];
+  // Nasi rest height rides position[1] so stacked scoops perch on the pile;
+  // plate-level scoops keep position[1] === 0, exactly as before.
+  const restY = isNasi ? NASI_REST_Y + (food.position[1] ?? 0) : food.position[1];
 
   // Arm the spawn settle exactly once per instanceId. Stale spawnedAt
   // (e.g. a re-run after a rearrange commit changed position) is ignored so
@@ -378,7 +379,7 @@ function PlacedFoodMesh({ food, isSelected, onPointerDown, onClick, pendingUpdat
         {isSelected && !dragging && <SelectionRing position={pos} radius={maxRadius * 1.2} />}
         <LandingShadow spotRef={shadowSpotRef} radius={maxRadius} />
 
-        <group ref={groupRef} position={[pos[0], NASI_REST_Y, pos[2]]}>
+        <group ref={groupRef} position={[pos[0], NASI_REST_Y + (pos[1] ?? 0), pos[2]]}>
           {/* Soft AO blob under rim (fades while lifted; the landing shadow
               marks the drop spot instead) */}
           <mesh
@@ -1156,10 +1157,10 @@ const Plate3D = forwardRef<RaycastHandle, Plate3DProps>(({
   const hint = trayDrag
     ? '🎯 Lepas di atas piring…'
     : placedFoods.length === 0
-      ? '🍚 Seret bahan ke piring · cubit untuk zoom'
+      ? '🍚 Seret bahan ke piring · lepas di atas makanan lain untuk menumpuk'
       : selectedFoodId
-        ? '✋ Seret makanan untuk geser · ubah porsi di dock · seret ke 🗑️ untuk buang'
-        : '🍚 Seret bahan ke piring · seret makanan di piring untuk geser';
+        ? '✋ Seret untuk geser · lepas di atas makanan lain untuk menumpuk · seret ke 🗑️ untuk buang'
+        : '🍚 Seret bahan ke piring · lepas di atas makanan lain untuk menumpuk';
 
   return (
     <>
